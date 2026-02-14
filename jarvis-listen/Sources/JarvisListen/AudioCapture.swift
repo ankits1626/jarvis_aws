@@ -2,6 +2,59 @@ import Foundation
 import CoreMedia
 import AVFoundation
 
+// MARK: - TimeoutError
+
+/// Error thrown when an async operation exceeds its timeout.
+struct TimeoutError: Error, CustomStringConvertible {
+    let description = "Operation timed out"
+}
+
+/// Thread-safe one-shot flag to ensure a continuation is resumed exactly once.
+private final class OnceFlag: @unchecked Sendable {
+    private var lock = os_unfair_lock()
+    private var fired = false
+    
+    /// Attempts to claim the resume right. Returns true only on the first call.
+    func tryClaim() -> Bool {
+        os_unfair_lock_lock(&lock)
+        defer { os_unfair_lock_unlock(&lock) }
+        if fired { return false }
+        fired = true
+        return true
+    }
+}
+
+/// Executes an async operation with a timeout.
+/// Uses detached tasks + continuation instead of TaskGroup to avoid
+/// waiting for a stuck operation that can never complete.
+func withTimeout<T: Sendable>(seconds: TimeInterval, operation: @escaping @Sendable () async throws -> T) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+        let flag = OnceFlag()
+        
+        // Launch operation in a detached task (not bound to any task group)
+        Task.detached {
+            do {
+                let result = try await operation()
+                if flag.tryClaim() {
+                    continuation.resume(returning: result)
+                }
+            } catch {
+                if flag.tryClaim() {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+        
+        // Launch timeout in a detached task
+        Task.detached {
+            try? await Task.sleep(for: .seconds(seconds))
+            if flag.tryClaim() {
+                continuation.resume(throwing: TimeoutError())
+            }
+        }
+    }
+}
+
 // MARK: - AudioData
 
 /// Represents a chunk of audio from a single source (microphone or system audio).
@@ -101,12 +154,27 @@ actor AudioCapture: AudioCaptureProvider {
         self.streamDelegate = StreamDelegate(continuation: continuation)
     }
     
+    deinit {
+        // Safety net: finish continuation if stopCapture wasn't called
+        // This prevents continuation leaks if the actor is deallocated unexpectedly
+        continuation.finish()
+    }
+    
     func startCapture() async throws {
-        // Get shareable content - this will fail if Screen Recording permission is denied
+        logToStderr("DEBUG: [AC.startCapture] Requesting SCShareableContent.current...")
+        
+        // Get shareable content with timeout - this will fail if Screen Recording permission is denied
         let content: SCShareableContent
         do {
-            content = try await SCShareableContent.current
+            // Add timeout to prevent hanging if permission is denied
+            content = try await withTimeout(seconds: 3) {
+                try await SCShareableContent.current
+            }
+        } catch is TimeoutError {
+            logToStderr("DEBUG: [AC.startCapture] SCShareableContent.current TIMED OUT")
+            throw AudioCaptureError.permissionDenied
         } catch {
+            logToStderr("DEBUG: [AC.startCapture] SCShareableContent.current THREW: \(error)")
             // Check if this is a permission error
             let nsError = error as NSError
             if nsError.domain == "com.apple.screencapturekit" || 
@@ -116,6 +184,8 @@ actor AudioCapture: AudioCaptureProvider {
             }
             throw error
         }
+        
+        logToStderr("DEBUG: [AC.startCapture] Got SCShareableContent - displays: \(content.displays.count)")
         
         // Select first display for content filter
         guard let display = content.displays.first else {
@@ -133,8 +203,10 @@ actor AudioCapture: AudioCaptureProvider {
         // Create content filter
         let filter = SCContentFilter(display: display, excludingWindows: [])
         
+        logToStderr("DEBUG: [AC.startCapture] Creating SCStream and adding outputs...")
+        
         // Create stream configuration
-        let config = SCStreamConfiguration()
+        var config = SCStreamConfiguration()
         
         // Audio settings
         config.capturesAudio = true
@@ -177,18 +249,58 @@ actor AudioCapture: AudioCaptureProvider {
             }
         }
         
-        // Start capture
+        logToStderr("DEBUG: [AC.startCapture] About to call scStream.startCapture()...")
+        
+        // Start capture with timeout - microphone permission can cause hang for sidecar processes
         do {
-            try await scStream.startCapture()
+            try await withTimeout(seconds: 5) {
+                try await scStream.startCapture()
+            }
+        } catch is TimeoutError {
+            logToStderr("Warning: startCapture() timed out with microphone enabled. Retrying without microphone...")
+            
+            // Stop the hung stream (best effort)
+            try? await scStream.stopCapture()
+            
+            // Recreate stream without microphone
+            config.captureMicrophone = false
+            
+            let retryStream = SCStream(filter: filter, configuration: config, delegate: nil)
+            self.stream = retryStream
+            
+            if let delegate = streamDelegate {
+                try retryStream.addStreamOutput(delegate, type: .audio, sampleHandlerQueue: .global(qos: .userInteractive))
+            }
+            
+            do {
+                try await withTimeout(seconds: 5) {
+                    try await retryStream.startCapture()
+                }
+            } catch is TimeoutError {
+                logToStderr("DEBUG: [AC.startCapture] Retry without microphone also timed out")
+                throw AudioCaptureError.permissionDenied
+            } catch {
+                logToStderr("DEBUG: [AC.startCapture] Retry threw: \(error)")
+                let nsError = error as NSError
+                if nsError.domain == "com.apple.screencapturekit" ||
+                    nsError.localizedDescription.contains("permission") {
+                    throw AudioCaptureError.permissionDenied
+                }
+                throw error
+            }
+            
+            logToStderr("Warning: Microphone capture unavailable. Continuing with system audio only.")
         } catch {
-            // Wrap any capture start errors with descriptive message
+            logToStderr("DEBUG: [AC.startCapture] scStream.startCapture() THREW: \(error)")
             let nsError = error as NSError
-            if nsError.domain == "com.apple.screencapturekit" || 
-               nsError.localizedDescription.contains("permission") {
+            if nsError.domain == "com.apple.screencapturekit" ||
+                nsError.localizedDescription.contains("permission") {
                 throw AudioCaptureError.permissionDenied
             }
             throw error
         }
+        
+        logToStderr("DEBUG: [AC.startCapture] scStream.startCapture() SUCCEEDED")
         
         // Print startup message to stderr
         let deviceName = configuration.microphoneDeviceID ?? "Default"
