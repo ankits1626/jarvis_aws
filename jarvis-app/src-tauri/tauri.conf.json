@@ -37,10 +37,7 @@
       "binaries/JarvisListen"
     ],
     "macOS": {
-      "infoPlist": {
-        "NSMicrophoneUsageDescription": "JarvisApp needs microphone access to capture your voice during recordings.",
-        "NSScreenCaptureUsageDescription": "JarvisApp needs screen recording permission to capture system audio."
-      }
+      "infoPlist": "Info.plist"
     }
   }
 }
