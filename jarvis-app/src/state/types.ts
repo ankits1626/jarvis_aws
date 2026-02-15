@@ -33,6 +33,36 @@ export interface RecordingMetadata {
 }
 
 /**
+ * Transcription segment matching Rust TranscriptionSegment struct
+ * 
+ * This interface matches the Rust type in src-tauri/src/transcription/provider.rs
+ */
+export interface TranscriptionSegment {
+  /** Transcribed text */
+  text: string;
+  
+  /** Start time in milliseconds */
+  start_ms: number;
+  
+  /** End time in milliseconds */
+  end_ms: number;
+  
+  /** false = Vosk partial (gray text), true = Whisper final (normal text) */
+  is_final: boolean;
+}
+
+/**
+ * Transcription status matching Rust TranscriptionStatus enum
+ * 
+ * This type matches the Rust enum in src-tauri/src/transcription/provider.rs
+ * - idle: Not currently transcribing
+ * - active: Currently transcribing
+ * - error: An error occurred
+ * - disabled: Transcription is disabled (models not available)
+ */
+export type TranscriptionStatus = "idle" | "active" | "error" | "disabled";
+
+/**
  * Application state interface
  * 
  * Represents the complete state of the application, managed by the reducer
@@ -58,6 +88,15 @@ export interface AppState {
   
   /** Whether the permission dialog should be shown */
   showPermissionDialog: boolean;
+  
+  /** Current transcription status */
+  transcriptionStatus: TranscriptionStatus;
+  
+  /** Accumulated transcript segments */
+  transcript: TranscriptionSegment[];
+  
+  /** Current transcription error message (null if no error) */
+  transcriptionError: string | null;
 }
 
 /**
@@ -79,7 +118,12 @@ export type AppAction =
   | { type: "SHOW_PERMISSION_DIALOG" }
   | { type: "HIDE_PERMISSION_DIALOG" }
   | { type: "TICK_TIMER" }
-  | { type: "RESET_TIMER" };
+  | { type: "RESET_TIMER" }
+  | { type: "TRANSCRIPTION_STARTED" }
+  | { type: "TRANSCRIPTION_UPDATE"; segment: TranscriptionSegment }
+  | { type: "TRANSCRIPTION_STOPPED"; transcript: TranscriptionSegment[] }
+  | { type: "TRANSCRIPTION_ERROR"; message: string }
+  | { type: "CLEAR_TRANSCRIPT" };
 
 /**
  * Event payload types for Tauri events
@@ -105,4 +149,25 @@ export interface ShortcutEvent {
 /** Payload for sidecar-crashed event */
 export interface CrashedEvent {
   code: number | null;
+}
+
+/**
+ * Transcription event payload types
+ * 
+ * These types define the structure of transcription event payloads emitted by the Rust backend
+ */
+
+/** Payload for transcription-update event */
+export interface TranscriptionUpdateEvent {
+  segment: TranscriptionSegment;
+}
+
+/** Payload for transcription-stopped event */
+export interface TranscriptionStoppedEvent {
+  transcript: TranscriptionSegment[];
+}
+
+/** Payload for transcription-error event */
+export interface TranscriptionErrorEvent {
+  message: string;
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useRecording } from "./hooks/useRecording";
 import { DeleteConfirmDialog } from "./components/DeleteConfirmDialog";
+import { TranscriptDisplay } from "./components/TranscriptDisplay";
 import "./App.css";
 
 /**
@@ -283,6 +284,13 @@ function App() {
             />
           </div>
         )}
+
+        {/* Transcript Display - Requirements 9.1, 9.2, 9.3, 9.4, 9.5, 9.6 */}
+        <TranscriptDisplay
+          transcript={state.transcript}
+          status={state.transcriptionStatus}
+          error={state.transcriptionError}
+        />
 
         {/* Error Display - Requirement 8.4 */}
         {/* Don't show concurrent recording errors here - they appear inline (Requirement 8.5) */}

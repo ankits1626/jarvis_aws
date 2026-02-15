@@ -8,6 +8,9 @@ import type {
   ErrorEvent,
   ShortcutEvent,
   CrashedEvent,
+  TranscriptionSegment,
+  TranscriptionStoppedEvent,
+  TranscriptionErrorEvent,
 } from '../state/types';
 
 /**
@@ -50,9 +53,11 @@ export function useRecording() {
   /**
    * Start a new recording
    * Dispatches START_RECORDING action and invokes the backend command
+   * Also clears the previous transcript (Requirement 9.6)
    */
   const startRecording = useCallback(async () => {
     dispatch({ type: "START_RECORDING" });
+    dispatch({ type: "CLEAR_TRANSCRIPT" }); // Clear transcript on new recording
     
     try {
       await invoke<string>("start_recording");
@@ -230,6 +235,47 @@ export function useRecording() {
         stopRecording();
       }
     }, [startRecording, stopRecording])
+  );
+
+  /**
+   * Listen for transcription-started event from backend
+   * Emitted when transcription begins for a recording
+   */
+  useTauriEvent("transcription-started", 
+    useCallback(() => {
+      dispatch({ type: "TRANSCRIPTION_STARTED" });
+    }, [])
+  );
+
+  /**
+   * Listen for transcription-update event from backend
+   * Emitted when a new transcription segment is produced (partial or final)
+   * Backend emits the segment directly, not wrapped in an object
+   */
+  useTauriEvent<TranscriptionSegment>("transcription-update", 
+    useCallback((payload) => {
+      dispatch({ type: "TRANSCRIPTION_UPDATE", segment: payload });
+    }, [])
+  );
+
+  /**
+   * Listen for transcription-stopped event from backend
+   * Emitted when transcription completes with the full transcript
+   */
+  useTauriEvent<TranscriptionStoppedEvent>("transcription-stopped", 
+    useCallback((payload) => {
+      dispatch({ type: "TRANSCRIPTION_STOPPED", transcript: payload.transcript });
+    }, [])
+  );
+
+  /**
+   * Listen for transcription-error event from backend
+   * Emitted when a transcription error occurs
+   */
+  useTauriEvent<TranscriptionErrorEvent>("transcription-error", 
+    useCallback((payload) => {
+      dispatch({ type: "TRANSCRIPTION_ERROR", message: payload.message });
+    }, [])
   );
 
   // ===== Return Interface =====

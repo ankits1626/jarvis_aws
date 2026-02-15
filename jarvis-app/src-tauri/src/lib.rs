@@ -5,6 +5,7 @@ pub mod files;
 pub mod platform;
 pub mod recording;
 pub mod shortcuts;
+pub mod transcription;
 pub mod wav;
 
 use std::sync::Mutex;
@@ -12,6 +13,7 @@ use tauri::Manager;
 use files::FileManager;
 use recording::RecordingManager;
 use shortcuts::ShortcutManager;
+use transcription::{TranscriptionConfig, TranscriptionManager, HybridProvider, TranscriptionProvider};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -29,6 +31,41 @@ pub fn run() {
             let recording_manager = RecordingManager::new(app.handle().clone());
             app.manage(Mutex::new(recording_manager));
             
+            // Initialize TranscriptionManager with HybridProvider
+            // Create TranscriptionConfig from environment variables
+            let transcription_config = TranscriptionConfig::from_env();
+            
+            // Validate configuration - skip initialization if invalid
+            if let Err(e) = transcription_config.validate() {
+                eprintln!("Warning: Invalid transcription configuration: {}", e);
+                eprintln!("Transcription will be disabled. Recording will continue to work.");
+                // Don't initialize provider with invalid config
+            } else {
+                // Initialize HybridProvider with graceful degradation
+                let mut provider = HybridProvider::new();
+                
+                // Initialize the provider with config (loads models)
+                match provider.initialize(&transcription_config) {
+                    Ok(()) => {
+                        eprintln!("TranscriptionManager: Initialized with provider '{}'", provider.name());
+                        
+                        // Create TranscriptionManager with the provider
+                        let transcription_manager = TranscriptionManager::new(
+                            Box::new(provider),
+                            app.handle().clone()
+                        );
+                        
+                        // Add to managed state wrapped in tokio::sync::Mutex (not std::sync::Mutex)
+                        app.manage(tokio::sync::Mutex::new(transcription_manager));
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Failed to initialize HybridProvider: {}", e);
+                        eprintln!("Transcription will be disabled. Recording will continue to work.");
+                        // Don't add TranscriptionManager to state - RecordingManager will handle gracefully
+                    }
+                }
+            }
+            
             // Initialize ShortcutManager and register shortcuts
             let shortcut_manager = ShortcutManager::new(app.handle().clone());
             shortcut_manager.register_shortcuts()
@@ -44,6 +81,8 @@ pub fn run() {
             commands::delete_recording,
             commands::check_platform_support,
             commands::open_system_settings,
+            commands::get_transcript,
+            commands::get_transcription_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

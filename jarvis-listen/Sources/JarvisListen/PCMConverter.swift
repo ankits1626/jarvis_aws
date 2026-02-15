@@ -132,8 +132,9 @@ final class PCMConverter {
     init(configuration: CaptureConfiguration) {
         self.configuration = configuration
         
-        // Create ring buffers with 2-second capacity
-        let bufferCapacity = configuration.sampleRate * 2 * 2  // 2 seconds * 2 bytes per sample
+        // Create ring buffers with 10-second capacity
+        // Increased from 2s to absorb backpressure when Whisper inference blocks the FIFO reader
+        let bufferCapacity = configuration.sampleRate * 10 * 2  // 10 seconds * 2 bytes per sample
         self.micBuffer = RingBuffer(capacity: bufferCapacity)
         self.systemBuffer = RingBuffer(capacity: bufferCapacity)
     }

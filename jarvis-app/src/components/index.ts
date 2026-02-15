@@ -6,3 +6,4 @@ export { AudioPlayer } from './AudioPlayer';
 export { PermissionDialog } from './PermissionDialog';
 export { ErrorToast } from './ErrorToast';
 export { DeleteConfirmDialog } from './DeleteConfirmDialog';
+export { TranscriptDisplay } from './TranscriptDisplay';

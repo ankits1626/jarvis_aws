@@ -1,6 +1,7 @@
 use crate::files::{FileManager, RecordingMetadata};
 use crate::platform::PlatformDetector;
 use crate::recording::RecordingManager;
+use crate::transcription::{TranscriptionManager, TranscriptionSegment, TranscriptionStatus};
 use crate::wav::WavConverter;
 use std::sync::Mutex;
 use tauri::State;
@@ -316,6 +317,87 @@ pub fn check_platform_support() -> Result<bool, String> {
 #[tauri::command]
 pub fn open_system_settings() -> Result<(), String> {
     PlatformDetector::open_system_settings()
+}
+
+/// Get the accumulated transcript from the current recording
+/// 
+/// This command returns all transcription segments that have been accumulated
+/// during the current recording session. Returns an empty array if transcription
+/// is not available or no recording is in progress.
+/// 
+/// # Arguments
+/// 
+/// * `state` - Managed state containing the TranscriptionManager (wrapped in tokio::sync::Mutex)
+/// 
+/// # Returns
+/// 
+/// * `Ok(Vec<TranscriptionSegment>)` - Array of transcription segments
+/// * `Err(String)` - Error message if TranscriptionManager is not available
+/// 
+/// # Examples
+/// 
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+/// 
+/// interface TranscriptionSegment {
+///   text: string;
+///   start_ms: number;
+///   end_ms: number;
+///   is_final: boolean;
+/// }
+/// 
+/// try {
+///   const transcript: TranscriptionSegment[] = await invoke('get_transcript');
+///   console.log(`Got ${transcript.length} segments`);
+/// } catch (error) {
+///   console.error(`Failed to get transcript: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn get_transcript(
+    state: State<'_, tokio::sync::Mutex<TranscriptionManager>>,
+) -> Result<Vec<TranscriptionSegment>, String> {
+    let manager = state.lock().await;
+    Ok(manager.get_transcript().await)
+}
+
+/// Get the current transcription status
+/// 
+/// This command returns the current status of the transcription system:
+/// - "idle": Not currently transcribing
+/// - "active": Currently transcribing
+/// - "error": An error occurred
+/// - "disabled": Transcription is disabled (models not available)
+/// 
+/// # Arguments
+/// 
+/// * `state` - Managed state containing the TranscriptionManager (wrapped in tokio::sync::Mutex)
+/// 
+/// # Returns
+/// 
+/// * `Ok(TranscriptionStatus)` - Current transcription status
+/// * `Err(String)` - Error message if TranscriptionManager is not available
+/// 
+/// # Examples
+/// 
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+/// 
+/// type TranscriptionStatus = "idle" | "active" | "error" | "disabled";
+/// 
+/// try {
+///   const status: TranscriptionStatus = await invoke('get_transcription_status');
+///   console.log(`Transcription status: ${status}`);
+/// } catch (error) {
+///   console.error(`Failed to get transcription status: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn get_transcription_status(
+    state: State<'_, tokio::sync::Mutex<TranscriptionManager>>,
+) -> Result<TranscriptionStatus, String> {
+    let manager = state.lock().await;
+    Ok(manager.get_status().await)
 }
 
 #[cfg(test)]

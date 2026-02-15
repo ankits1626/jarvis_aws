@@ -28,6 +28,9 @@ export const initialState: AppState = {
   error: null,
   elapsedTime: 0,
   showPermissionDialog: false,
+  transcriptionStatus: "idle",
+  transcript: [],
+  transcriptionError: null,
 };
 
 /**
@@ -155,6 +158,45 @@ export function appReducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         elapsedTime: 0,
+      };
+
+    case "TRANSCRIPTION_STARTED":
+      // Transcription started - set status to active
+      return {
+        ...state,
+        transcriptionStatus: "active",
+        transcriptionError: null, // Clear any previous errors
+      };
+
+    case "TRANSCRIPTION_UPDATE":
+      // New transcription segment received - append to transcript
+      return {
+        ...state,
+        transcript: [...state.transcript, action.segment],
+      };
+
+    case "TRANSCRIPTION_STOPPED":
+      // Transcription stopped - set status to idle and store final transcript
+      return {
+        ...state,
+        transcriptionStatus: "idle",
+        transcript: action.transcript,
+      };
+
+    case "TRANSCRIPTION_ERROR":
+      // Transcription error occurred - set status to error and store message
+      return {
+        ...state,
+        transcriptionStatus: "error",
+        transcriptionError: action.message,
+      };
+
+    case "CLEAR_TRANSCRIPT":
+      // Clear transcript array
+      return {
+        ...state,
+        transcript: [],
+        transcriptionError: null,
       };
 
     default:

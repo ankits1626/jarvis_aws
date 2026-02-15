@@ -4,8 +4,10 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use chrono::Local;
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::{self, Receiver};
 use serde_json::json;
+
+use crate::transcription::{AudioRouter, TranscriptionManager};
 
 /// Manages the lifecycle of audio recording via the JarvisListen sidecar
 /// 
@@ -14,6 +16,8 @@ use serde_json::json;
 /// - Tracking the current recording state
 /// - Monitoring sidecar events (stderr, crashes)
 /// - Emitting Tauri events to notify the frontend
+/// - Managing AudioRouter for FIFO-based audio routing
+/// - Coordinating with TranscriptionManager for real-time transcription
 pub struct RecordingManager {
     /// The currently running sidecar process, if any
     current_child: Option<CommandChild>,
@@ -23,6 +27,9 @@ pub struct RecordingManager {
     
     /// Handle to the Tauri application for emitting events
     app_handle: AppHandle,
+    
+    /// Handle to the AudioRouter background task
+    audio_router_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl RecordingManager {
@@ -47,6 +54,7 @@ impl RecordingManager {
             current_child: None,
             current_filepath: None,
             app_handle,
+            audio_router_task: None,
         }
     }
     
@@ -309,10 +317,13 @@ impl RecordingManager {
     /// This method initiates a new audio recording by:
     /// 1. Checking if a recording is already in progress (returns error if true)
     /// 2. Generating a timestamped filepath in the recordings directory
-    /// 3. Spawning the JarvisListen sidecar with the --output flag
-    /// 4. Storing the child process and filepath in state
-    /// 5. Starting event monitoring in the background
-    /// 6. Emitting a "recording-started" event with the filename
+    /// 3. Creating AudioRouter with FIFO for audio routing
+    /// 4. Spawning the JarvisListen sidecar with --output pointing to FIFO path
+    /// 5. Starting AudioRouter background task to route audio to file + transcription
+    /// 6. Starting TranscriptionManager with mpsc receiver
+    /// 7. Storing the child process, filepath, and AudioRouter in state
+    /// 8. Starting event monitoring in the background
+    /// 9. Emitting a "recording-started" event with the filename
     /// 
     /// # Arguments
     /// 
@@ -328,8 +339,9 @@ impl RecordingManager {
     /// 
     /// Returns an error if:
     /// - A recording is already in progress (concurrent recording not allowed)
+    /// - AudioRouter creation fails (FIFO creation error)
     /// - The sidecar process fails to spawn
-    /// - The output path is invalid
+    /// - TranscriptionManager fails to start
     /// 
     /// # Examples
     /// 
@@ -338,7 +350,7 @@ impl RecordingManager {
     /// use tauri::AppHandle;
     /// use jarvis_app_lib::recording::RecordingManager;
     /// 
-    /// async fn start_new_recording(
+    /// fn start_new_recording(
     ///     recording_manager: &mut RecordingManager,
     ///     recordings_dir: &std::path::Path
     /// ) -> Result<(), String> {
@@ -370,15 +382,52 @@ impl RecordingManager {
             .ok_or_else(|| "Failed to extract filename from path".to_string())?
             .to_string();
         
-        // Spawn sidecar with --output flag
-        let (rx, child) = self.spawn_sidecar(&output_path)?;
+        // Create mpsc channel for audio routing (AudioRouter → TranscriptionManager)
+        // Large buffer (1000 chunks × 3200 bytes = 100s of audio) to avoid backpressure
+        // from blocking Whisper inference reaching JarvisListen via FIFO pipe
+        let (tx, rx) = mpsc::channel::<Vec<u8>>(1000);
         
-        // Store child process and filepath in state
+        // Create AudioRouter (creates FIFO, returns path)
+        let audio_router = AudioRouter::new(output_path.clone(), tx)
+            .map_err(|e| format!("Failed to create AudioRouter: {}", e))?;
+        
+        // Get FIFO path to pass to sidecar
+        let fifo_path = audio_router.fifo_path().to_path_buf();
+        
+        // Spawn sidecar with --output pointing to FIFO path
+        let (event_rx, child) = self.spawn_sidecar(&fifo_path)?;
+        
+        // Start AudioRouter background task (opens FIFO, reads chunks, routes to file + mpsc)
+        // Note: AudioRouter is moved into the task, so we can't store it in state
+        let audio_router_task = tokio::spawn(async move {
+            if let Err(e) = audio_router.start_routing().await {
+                eprintln!("AudioRouter error: {}", e);
+            }
+            // AudioRouter is dropped here, cleaning up FIFO
+        });
+        
+        // Start TranscriptionManager with mpsc receiver (spawn task to avoid holding lock)
+        let app_handle_clone = self.app_handle.clone();
+        tokio::spawn(async move {
+            if let Some(transcription_manager_mutex) = app_handle_clone.try_state::<tokio::sync::Mutex<TranscriptionManager>>() {
+                let mut transcription_manager = transcription_manager_mutex.lock().await;
+                if let Err(e) = transcription_manager.start(rx).await {
+                    eprintln!("Warning: Failed to start transcription: {}", e);
+                    // Don't fail recording start if transcription fails
+                }
+            } else {
+                eprintln!("Warning: TranscriptionManager not found in Tauri state");
+                // Don't fail recording start if transcription is unavailable
+            }
+        });
+        
+        // Store child process, filepath, and task in state
         self.current_child = Some(child);
         self.current_filepath = Some(output_path);
+        self.audio_router_task = Some(audio_router_task);
         
         // Start monitoring events in background
-        self.monitor_events(rx);
+        self.monitor_events(event_rx);
         
         // Emit "recording-started" event with filename
         if let Err(e) = self.app_handle.emit("recording-started", json!({ "filename": filename })) {
@@ -394,12 +443,14 @@ impl RecordingManager {
     /// 
     /// This method gracefully terminates the active recording by:
     /// 1. Checking if a recording is active (returns error if not)
-    /// 2. Sending SIGTERM to the sidecar process to allow signal handlers to flush buffers
-    /// 3. Waiting for the process to exit with a 5-second timeout
-    /// 4. Falling back to SIGKILL if the timeout expires
-    /// 5. Verifying the PCM file exists and has data
-    /// 6. Clearing state (current_child, current_filepath)
-    /// 7. Emitting a "recording-stopped" event
+    /// 2. Stopping TranscriptionManager to drain remaining audio
+    /// 3. Sending SIGTERM to the sidecar process to allow signal handlers to flush buffers
+    /// 4. Waiting for the process to exit with a 5-second timeout
+    /// 5. Falling back to SIGKILL if the timeout expires
+    /// 6. Waiting for AudioRouter task to complete
+    /// 7. Verifying the PCM file exists and has data
+    /// 8. Clearing state (current_child, current_filepath, audio_router, audio_router_task)
+    /// 9. Emitting a "recording-stopped" event
     /// 
     /// # Returns
     /// 
@@ -428,7 +479,7 @@ impl RecordingManager {
     /// use tauri::AppHandle;
     /// use jarvis_app_lib::recording::RecordingManager;
     /// 
-    /// async fn stop_current_recording(
+    /// fn stop_current_recording(
     ///     recording_manager: &mut RecordingManager
     /// ) -> Result<(), String> {
     ///     match recording_manager.stop_recording() {
@@ -457,6 +508,21 @@ impl RecordingManager {
             .current_filepath
             .take()
             .ok_or("No recording filepath found")?;
+        
+        // Take AudioRouter task
+        let audio_router_task = self.audio_router_task.take();
+        
+        // Stop TranscriptionManager to drain remaining audio (spawn task to avoid blocking)
+        let app_handle_clone = self.app_handle.clone();
+        tokio::spawn(async move {
+            if let Some(transcription_manager_mutex) = app_handle_clone.try_state::<tokio::sync::Mutex<TranscriptionManager>>() {
+                let mut transcription_manager = transcription_manager_mutex.lock().await;
+                if let Err(e) = transcription_manager.stop().await {
+                    eprintln!("Warning: Failed to stop transcription: {}", e);
+                    // Don't fail recording stop if transcription stop fails
+                }
+            }
+        });
         
         // Get process ID before releasing mutex
         let pid = child.pid();
@@ -495,6 +561,13 @@ impl RecordingManager {
                 // Note: We can't use child.kill() here since child was moved
                 // But SIGKILL via kill() should work
                 let _ = kill(Pid::from_raw(pid_for_task as i32), Signal::SIGKILL);
+            }
+            
+            // Wait for AudioRouter task to complete (if it exists)
+            if let Some(task) = audio_router_task {
+                if let Err(e) = task.await {
+                    eprintln!("Warning: AudioRouter task join error: {}", e);
+                }
             }
             
             // Verify PCM file exists and has data
