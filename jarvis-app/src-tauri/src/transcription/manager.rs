@@ -87,7 +87,6 @@ impl TranscriptionManager {
             let mut total_chunks = 0usize;
             let mut total_segments = 0usize;
             let mut total_windows = 0usize;
-            let mut stopped = false;
 
             loop {
                 tokio::select! {
@@ -98,7 +97,6 @@ impl TranscriptionManager {
                         if *stop_rx.borrow() {
                             eprintln!("TranscriptionManager: Stop signal received, draining remaining audio ({} bytes buffered)",
                                       audio_buffer.len());
-                            stopped = true;
                             break;
                         }
                     }
@@ -153,7 +151,6 @@ impl TranscriptionManager {
                                 // Channel closed - AudioRouter finished or crashed
                                 eprintln!("TranscriptionManager: Audio channel closed ({} bytes buffered)",
                                           audio_buffer.len());
-                                stopped = true;
                                 break;
                             }
                         }
@@ -162,35 +159,33 @@ impl TranscriptionManager {
             }
 
             // Drain remaining audio after loop exit
-            if stopped {
-                if let Some(audio) = audio_buffer.drain_remaining(1.0) {
-                    eprintln!("TranscriptionManager: Draining final audio ({} f32 samples, {:.1}s)",
-                              audio.len(), audio.len() as f32 / 16000.0);
+            if let Some(audio) = audio_buffer.drain_remaining(1.0) {
+                eprintln!("TranscriptionManager: Draining final audio ({} f32 samples, {:.1}s)",
+                          audio.len(), audio.len() as f32 / 16000.0);
 
-                    let transcribe_result = tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(async {
-                            provider.lock().await.transcribe(&audio)
-                        })
-                    });
+                let transcribe_result = tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(async {
+                        provider.lock().await.transcribe(&audio)
+                    })
+                });
 
-                    let segments_or_err: Result<Vec<TranscriptionSegment>, String> =
-                        transcribe_result.map_err(|e| e.to_string());
+                let segments_or_err: Result<Vec<TranscriptionSegment>, String> =
+                    transcribe_result.map_err(|e| e.to_string());
 
-                    match segments_or_err {
-                        Ok(segments) => {
-                            for segment in segments {
-                                transcript.lock().await.push(segment.clone());
-                                total_segments += 1;
-                                let _ = app_handle.emit("transcription-update", &segment);
-                            }
-                        }
-                        Err(err_msg) => {
-                            eprintln!("TranscriptionManager: Error transcribing final audio: {}", err_msg);
+                match segments_or_err {
+                    Ok(segments) => {
+                        for segment in segments {
+                            transcript.lock().await.push(segment.clone());
+                            total_segments += 1;
+                            let _ = app_handle.emit("transcription-update", &segment);
                         }
                     }
-                } else {
-                    eprintln!("TranscriptionManager: No remaining audio to drain (below 1s threshold)");
+                    Err(err_msg) => {
+                        eprintln!("TranscriptionManager: Error transcribing final audio: {}", err_msg);
+                    }
                 }
+            } else {
+                eprintln!("TranscriptionManager: No remaining audio to drain (below 1s threshold)");
             }
 
             eprintln!("TranscriptionManager: Transcription completed. Processed {} chunks, {} windows, emitted {} segments",

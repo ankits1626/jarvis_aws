@@ -42,7 +42,12 @@ impl SileroVad {
     /// Loads the Silero VAD v5 ONNX model from the configured path.
     /// Download from: https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
     /// If loading fails, gracefully degrades (available=false).
-    pub fn new(model_path: Option<PathBuf>) -> Self {
+    ///
+    /// # Arguments
+    ///
+    /// * `model_path` - Optional path to the ONNX model file
+    /// * `threshold` - Speech detection threshold (0.0 to 1.0). Default is 0.5.
+    pub fn new(model_path: Option<PathBuf>, threshold: f32) -> Self {
         let path = model_path.unwrap_or_else(|| {
             let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
             home.join(".jarvis/models/silero_vad.onnx")
@@ -67,7 +72,7 @@ impl SileroVad {
                     state: vec![0.0f32; 2 * 1 * Self::STATE_DIM], // [2, 1, 128]
                     available: true,
                     chunk_size: Self::CHUNK_SIZE,
-                    threshold: Self::THRESHOLD,
+                    threshold,
                 }
             }
             Err(e) => {
@@ -75,19 +80,23 @@ impl SileroVad {
                     "Warning: Failed to load Silero VAD model: {}. Will process all audio.",
                     e
                 );
-                Self::unavailable()
+                Self::unavailable_with_threshold(threshold)
             }
         }
     }
 
-    fn unavailable() -> Self {
+    fn unavailable_with_threshold(threshold: f32) -> Self {
         Self {
             session: None,
             state: Vec::new(),
             available: false,
             chunk_size: Self::CHUNK_SIZE,
-            threshold: Self::THRESHOLD,
+            threshold,
         }
+    }
+
+    fn unavailable() -> Self {
+        Self::unavailable_with_threshold(Self::THRESHOLD)
     }
 
     /// Check if speech is present in the given audio samples
@@ -183,6 +192,17 @@ impl SileroVad {
             self.state = vec![0.0f32; 2 * 1 * Self::STATE_DIM];
         }
     }
+
+    /// Set the speech detection threshold
+    ///
+    /// # Arguments
+    ///
+    /// * `threshold` - New threshold value (0.0 to 1.0)
+    ///   - Lower values are more sensitive (detect more speech)
+    ///   - Higher values are less sensitive (require clearer speech)
+    pub fn set_threshold(&mut self, threshold: f32) {
+        self.threshold = threshold.clamp(0.0, 1.0);
+    }
 }
 
 #[cfg(test)]
@@ -191,13 +211,13 @@ mod tests {
 
     #[test]
     fn test_vad_creation() {
-        let vad = SileroVad::new(None);
+        let vad = SileroVad::new(None, 0.5);
         assert_eq!(vad.chunk_size(), 512);
     }
 
     #[test]
     fn test_vad_graceful_degradation_missing_model() {
-        let mut vad = SileroVad::new(Some(PathBuf::from("/nonexistent/path/model.onnx")));
+        let mut vad = SileroVad::new(Some(PathBuf::from("/nonexistent/path/model.onnx")), 0.5);
         let samples = vec![0.0f32; 512];
 
         assert!(!vad.is_available());
@@ -208,13 +228,13 @@ mod tests {
     fn test_vad_chunk_size() {
         // Property 12: VAD Chunk Size
         // Validates: Requirements 4.1
-        let vad = SileroVad::new(None);
+        let vad = SileroVad::new(None, 0.5);
         assert_eq!(vad.chunk_size(), 512, "VAD must process 512-sample chunks");
     }
 
     #[test]
     fn test_vad_silence_detection() {
-        let mut vad = SileroVad::new(None);
+        let mut vad = SileroVad::new(None, 0.5);
         if !vad.is_available() {
             eprintln!("Skipping silence detection test - VAD model not available");
             return;

@@ -1,10 +1,11 @@
 use crate::files::{FileManager, RecordingMetadata};
 use crate::platform::PlatformDetector;
 use crate::recording::RecordingManager;
+use crate::settings::{ModelManager, Settings, SettingsManager};
 use crate::transcription::{TranscriptionManager, TranscriptionSegment, TranscriptionStatus};
 use crate::wav::WavConverter;
-use std::sync::Mutex;
-use tauri::State;
+use std::sync::{Arc, Mutex, RwLock};
+use tauri::{Emitter, State};
 
 /// Start a new audio recording
 /// 
@@ -398,6 +399,295 @@ pub async fn get_transcription_status(
 ) -> Result<TranscriptionStatus, String> {
     let manager = state.lock().await;
     Ok(manager.get_status().await)
+}
+
+/// Get current application settings
+/// 
+/// This command returns the current settings including transcription engine
+/// toggles and Whisper model selection.
+/// 
+/// # Arguments
+/// 
+/// * `state` - Managed state containing the SettingsManager (wrapped in Arc<RwLock>)
+/// 
+/// # Returns
+/// 
+/// * `Ok(Settings)` - Current settings
+/// * `Err(String)` - Error message if settings cannot be read
+/// 
+/// # Examples
+/// 
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+/// 
+/// interface Settings {
+///   transcription: {
+///     vad_enabled: boolean;
+///     vad_threshold: number;
+///     vosk_enabled: boolean;
+///     whisper_enabled: boolean;
+///     whisper_model: string;
+///   };
+/// }
+/// 
+/// try {
+///   const settings: Settings = await invoke('get_settings');
+///   console.log(`VAD enabled: ${settings.transcription.vad_enabled}`);
+/// } catch (error) {
+///   console.error(`Failed to get settings: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub fn get_settings(
+    state: State<'_, Arc<RwLock<SettingsManager>>>,
+) -> Result<Settings, String> {
+    let manager = state
+        .read()
+        .map_err(|e| format!("Failed to acquire read lock: {}", e))?;
+    Ok(manager.get())
+}
+
+/// Update application settings
+/// 
+/// This command updates the settings and emits a "settings-changed" event
+/// to notify the frontend of the change.
+/// 
+/// # Arguments
+/// 
+/// * `settings` - New settings to apply
+/// * `state` - Managed state containing the SettingsManager (wrapped in Arc<RwLock>)
+/// * `app_handle` - Tauri app handle for emitting events
+/// 
+/// # Returns
+/// 
+/// * `Ok(())` - Settings updated successfully
+/// * `Err(String)` - Error message if update fails (validation or persistence error)
+/// 
+/// # Examples
+/// 
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+/// 
+/// try {
+///   await invoke('update_settings', {
+///     settings: {
+///       transcription: {
+///         vad_enabled: true,
+///         vad_threshold: 0.3,
+///         vosk_enabled: true,
+///         whisper_enabled: true,
+///         whisper_model: 'ggml-base.en.bin'
+///       }
+///     }
+///   });
+///   console.log('Settings updated successfully');
+/// } catch (error) {
+///   console.error(`Failed to update settings: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub fn update_settings(
+    settings: Settings,
+    state: State<'_, Arc<RwLock<SettingsManager>>>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let manager = state
+        .read()
+        .map_err(|e| format!("Failed to acquire read lock: {}", e))?;
+    
+    manager.update(settings.clone())?;
+    
+    // Emit settings-changed event
+    app_handle
+        .emit("settings-changed", &settings)
+        .map_err(|e| format!("Failed to emit settings-changed event: {}", e))?;
+    
+    Ok(())
+}
+
+/// List all supported Whisper models with their status
+/// 
+/// This command returns information about all supported models including:
+/// - Downloaded models (with file size)
+/// - Models currently being downloaded (with progress)
+/// - Models with download errors (with error message)
+/// - Models not yet downloaded
+/// 
+/// # Arguments
+/// 
+/// * `state` - Managed state containing the ModelManager (wrapped in Arc)
+/// 
+/// # Returns
+/// 
+/// * `Ok(Vec<ModelInfo>)` - Array of model information
+/// * `Err(String)` - Error message if listing fails
+/// 
+/// # Examples
+/// 
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+/// 
+/// interface ModelInfo {
+///   filename: string;
+///   status: 
+///     | { type: 'downloaded'; size_bytes: number }
+///     | { type: 'downloading'; progress: number }
+///     | { type: 'error'; message: string }
+///     | { type: 'notdownloaded' };
+/// }
+/// 
+/// try {
+///   const models: ModelInfo[] = await invoke('list_models');
+///   console.log(`Found ${models.length} models`);
+/// } catch (error) {
+///   console.error(`Failed to list models: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn list_models(
+    state: State<'_, Arc<ModelManager>>,
+) -> Result<Vec<crate::settings::ModelInfo>, String> {
+    state.list_models().await
+}
+
+/// Download a Whisper model from Hugging Face
+/// 
+/// This command initiates a model download in the background. Progress is
+/// reported via "model-download-progress" events, and completion/errors are
+/// reported via "model-download-complete" and "model-download-error" events.
+/// 
+/// The command returns immediately after spawning the download task.
+/// 
+/// # Arguments
+/// 
+/// * `model_name` - Name of the model to download (e.g., "ggml-base.en.bin")
+/// * `state` - Managed state containing the ModelManager (wrapped in Arc)
+/// 
+/// # Returns
+/// 
+/// * `Ok(())` - Download started successfully
+/// * `Err(String)` - Error message if download cannot be started
+/// 
+/// # Errors
+/// 
+/// Returns an error if:
+/// - Model name is not in the supported list
+/// - Model is already being downloaded
+/// 
+/// # Examples
+/// 
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+/// import { listen } from '@tauri-apps/api/event';
+/// 
+/// // Listen for progress events
+/// listen('model-download-progress', (event) => {
+///   console.log(`Progress: ${event.payload.progress}%`);
+/// });
+/// 
+/// // Listen for completion
+/// listen('model-download-complete', (event) => {
+///   console.log(`Download complete: ${event.payload.model}`);
+/// });
+/// 
+/// // Listen for errors
+/// listen('model-download-error', (event) => {
+///   console.error(`Download error: ${event.payload.error}`);
+/// });
+/// 
+/// try {
+///   await invoke('download_model', { modelName: 'ggml-base.en.bin' });
+///   console.log('Download started');
+/// } catch (error) {
+///   console.error(`Failed to start download: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn download_model(
+    model_name: String,
+    state: State<'_, Arc<ModelManager>>,
+) -> Result<(), String> {
+    state.download_model(model_name).await
+}
+
+/// Cancel an in-progress model download
+/// 
+/// This command cancels a model download that is currently in progress.
+/// The download task will be terminated and the temporary file will be cleaned up.
+/// 
+/// # Arguments
+/// 
+/// * `model_name` - Name of the model to cancel (e.g., "ggml-base.en.bin")
+/// * `state` - Managed state containing the ModelManager (wrapped in Arc)
+/// 
+/// # Returns
+/// 
+/// * `Ok(())` - Download cancelled successfully
+/// * `Err(String)` - Error message if cancellation fails
+/// 
+/// # Errors
+/// 
+/// Returns an error if the model is not currently being downloaded.
+/// 
+/// # Examples
+/// 
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+/// 
+/// try {
+///   await invoke('cancel_download', { modelName: 'ggml-base.en.bin' });
+///   console.log('Download cancelled');
+/// } catch (error) {
+///   console.error(`Failed to cancel download: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn cancel_download(
+    model_name: String,
+    state: State<'_, Arc<ModelManager>>,
+) -> Result<(), String> {
+    state.cancel_download(model_name).await
+}
+
+/// Delete a downloaded model
+/// 
+/// This command deletes a model file from disk and clears any associated
+/// error state.
+/// 
+/// # Arguments
+/// 
+/// * `model_name` - Name of the model to delete (e.g., "ggml-base.en.bin")
+/// * `state` - Managed state containing the ModelManager (wrapped in Arc)
+/// 
+/// # Returns
+/// 
+/// * `Ok(())` - Model deleted successfully
+/// * `Err(String)` - Error message if deletion fails
+/// 
+/// # Errors
+/// 
+/// Returns an error if:
+/// - Model file doesn't exist
+/// - File deletion fails (permission denied, etc.)
+/// 
+/// # Examples
+/// 
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+/// 
+/// try {
+///   await invoke('delete_model', { modelName: 'ggml-base.en.bin' });
+///   console.log('Model deleted');
+/// } catch (error) {
+///   console.error(`Failed to delete model: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn delete_model(
+    model_name: String,
+    state: State<'_, Arc<ModelManager>>,
+) -> Result<(), String> {
+    state.delete_model(model_name).await
 }
 
 #[cfg(test)]

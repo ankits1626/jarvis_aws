@@ -28,6 +28,319 @@ h1 {
   font-weight: 600;
 }
 
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 30px;
+}
+
+.header h1 {
+  margin: 0;
+}
+
+.settings-button {
+  background: transparent;
+  border: 2px solid #667eea;
+  color: #667eea;
+  font-size: 24px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.settings-button:hover {
+  background: #667eea;
+  color: white;
+  transform: rotate(90deg);
+}
+
+.settings-button:active {
+  transform: rotate(90deg) scale(0.95);
+}
+
+/* Settings Panel Styles */
+.settings-panel {
+  background: white;
+  border-radius: 15px;
+  padding: 30px;
+  max-width: 600px;
+  width: 90vw;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+  animation: slideUp 0.3s ease-out;
+}
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 25px;
+  padding-bottom: 15px;
+  border-bottom: 2px solid #e9ecef;
+}
+
+.settings-header h2 {
+  margin: 0;
+  color: #333;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.settings-content {
+  text-align: left;
+}
+
+.settings-section {
+  margin-bottom: 30px;
+}
+
+.settings-section h3 {
+  margin: 0 0 15px 0;
+  color: #333;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.setting-row {
+  margin-bottom: 15px;
+}
+
+.setting-row label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  color: #333;
+  cursor: pointer;
+}
+
+.setting-row input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+}
+
+.setting-row input[type="range"] {
+  width: 100%;
+  margin-top: 8px;
+  cursor: pointer;
+}
+
+.setting-info {
+  margin: 8px 0 0 0;
+  font-size: 13px;
+  color: #666;
+  font-style: italic;
+}
+
+.loading {
+  text-align: center;
+  padding: 40px;
+  color: #666;
+}
+
+/* Model List Styles */
+.model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.model-list-error {
+  background: #fee;
+  border: 1px solid #fcc;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 15px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #c00;
+  font-size: 14px;
+}
+
+.dismiss-button {
+  background: transparent;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: #c00;
+  padding: 0 5px;
+}
+
+.model-item {
+  padding: 15px;
+  background: #f8f9fa;
+  border-radius: 10px;
+  border: 2px solid transparent;
+  transition: all 0.2s;
+}
+
+.model-item.selected {
+  background: #e7f3ff;
+  border-color: #667eea;
+}
+
+.model-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.model-name {
+  font-weight: 600;
+  color: #333;
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+}
+
+.model-size {
+  font-size: 13px;
+  color: #666;
+}
+
+.model-error {
+  font-size: 13px;
+  color: #e74c3c;
+}
+
+.model-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.model-actions button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.download-button {
+  background: #667eea;
+  color: white;
+}
+
+.download-button:hover {
+  background: #5568d3;
+}
+
+.cancel-button {
+  background: #e74c3c;
+  color: white;
+}
+
+.cancel-button:hover {
+  background: #c0392b;
+}
+
+.select-button {
+  background: #27ae60;
+  color: white;
+}
+
+.select-button:hover:not(:disabled) {
+  background: #229954;
+}
+
+.select-button:disabled {
+  background: #95a5a6;
+  cursor: not-allowed;
+}
+
+.delete-button {
+  background: #e74c3c;
+  color: white;
+}
+
+.delete-button:hover {
+  background: #c0392b;
+}
+
+.retry-button {
+  background: #f39c12;
+  color: white;
+}
+
+.retry-button:hover {
+  background: #e67e22;
+}
+
+.progress-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #e9ecef;
+  border-radius: 6px;
+  padding: 8px 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.progress-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: #667eea;
+  opacity: 0.2;
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  position: relative;
+  z-index: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+}
+
+.delete-confirm {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex: 1;
+}
+
+.delete-confirm span {
+  font-size: 13px;
+  color: #333;
+  font-weight: 500;
+}
+
+.confirm-delete-button {
+  background: #e74c3c;
+  color: white;
+}
+
+.confirm-delete-button:hover {
+  background: #c0392b;
+}
+
+.cancel-delete-button {
+  background: #95a5a6;
+  color: white;
+}
+
+.cancel-delete-button:hover {
+  background: #7f8c8d;
+}
+
 .status {
   margin-bottom: 30px;
   min-height: 30px;

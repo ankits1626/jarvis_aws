@@ -62,7 +62,46 @@ pub struct TranscriptionConfig {
 }
 
 impl TranscriptionConfig {
-    /// Creates a new configuration from environment variables
+    /// Creates a new configuration from settings with environment variable overrides
+    /// 
+    /// Environment variables take precedence over settings:
+    /// - JARVIS_WHISPER_MODEL overrides settings.whisper_model
+    /// - JARVIS_VAD_MODEL overrides default VAD model path
+    /// - JARVIS_VOSK_MODEL overrides default Vosk model path
+    /// - JARVIS_WHISPER_THREADS overrides default thread count
+    /// 
+    /// # Arguments
+    /// 
+    /// * `settings` - Transcription settings from SettingsManager
+    pub fn from_settings(settings: &crate::settings::manager::TranscriptionSettings) -> Self {
+        let home = dirs::home_dir().expect("Failed to get home directory");
+        let models_dir = home.join(".jarvis/models");
+        
+        // Whisper model: env var overrides settings
+        let whisper_model_path = std::env::var("JARVIS_WHISPER_MODEL")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| models_dir.join(&settings.whisper_model));
+        
+        Self {
+            window_duration_secs: 3.0,
+            overlap_duration_secs: 0.5,
+            whisper_model_path,
+            vad_model_path: std::env::var("JARVIS_VAD_MODEL")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| models_dir.join("silero_vad.onnx")),
+            vosk_model_path: std::env::var("JARVIS_VOSK_MODEL")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| models_dir.join("vosk-model-small-en-us-0.15")),
+            whisper_threads: std::env::var("JARVIS_WHISPER_THREADS")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+        }
+    }
+    
+    /// Creates a new configuration from environment variables (legacy method)
+    /// 
+    /// This method is kept for backward compatibility but should be replaced
+    /// with from_settings() in new code.
     pub fn from_env() -> Self {
         let home = dirs::home_dir().expect("Failed to get home directory");
         let models_dir = home.join(".jarvis/models");

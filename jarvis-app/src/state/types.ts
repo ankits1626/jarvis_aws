@@ -171,3 +171,76 @@ export interface TranscriptionStoppedEvent {
 export interface TranscriptionErrorEvent {
   message: string;
 }
+
+/**
+ * Settings types
+ * 
+ * These types define the structure of application settings and model management
+ */
+
+/** Transcription settings matching Rust TranscriptionSettings struct */
+export interface TranscriptionSettings {
+  /** Whether VAD (Voice Activity Detection) is enabled */
+  vad_enabled: boolean;
+  
+  /** VAD threshold (0.0 to 1.0) */
+  vad_threshold: number;
+  
+  /** Whether Vosk is enabled for instant partials */
+  vosk_enabled: boolean;
+  
+  /** Whether Whisper is enabled (always true, not user-configurable) */
+  whisper_enabled: boolean;
+  
+  /** Whisper model filename (e.g., "ggml-base.en.bin") */
+  whisper_model: string;
+}
+
+/** Main settings structure matching Rust Settings struct */
+export interface Settings {
+  /** Transcription-specific settings */
+  transcription: TranscriptionSettings;
+}
+
+/** Model status enum matching Rust ModelStatus */
+export type ModelStatus = 
+  | { type: "downloaded"; size_bytes: number }
+  | { type: "downloading"; progress: number }
+  | { type: "not_downloaded" }
+  | { type: "error"; message: string };
+
+/** Model information matching Rust ModelInfo struct */
+export interface ModelInfo {
+  /** Model filename (e.g., "ggml-base.en.bin") */
+  filename: string;
+  
+  /** Current status of the model */
+  status: ModelStatus;
+}
+
+/** Payload for model-download-progress event */
+export interface ModelProgressEvent {
+  /** Model filename */
+  model_name: string;
+  
+  /** Download progress (0.0 to 100.0) */
+  progress: number;
+}
+
+/** Payload for model-download-complete event */
+export interface ModelDownloadCompleteEvent {
+  /** Model filename */
+  model_name: string;
+}
+
+/** Payload for model-download-error event */
+export interface ModelDownloadErrorEvent {
+  /** Model filename */
+  model_name: string;
+  
+  /** Error message */
+  error: string;
+}
+
+/** Payload for settings-changed event */
+export type SettingsChangedEvent = Settings;

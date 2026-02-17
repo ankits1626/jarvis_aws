@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useRecording } from "./hooks/useRecording";
 import { DeleteConfirmDialog } from "./components/DeleteConfirmDialog";
 import { TranscriptDisplay } from "./components/TranscriptDisplay";
+import { Settings } from "./components/Settings";
 import "./App.css";
 
 /**
@@ -34,6 +35,7 @@ function App() {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isLoadingRecordings, setIsLoadingRecordings] = useState(true);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
 
   // Load recordings on mount (Requirement 1.2)
   useEffect(() => {
@@ -165,7 +167,16 @@ function App() {
   return (
     <div className="app">
       <div className="container">
-        <h1>JarvisApp</h1>
+        <div className="header">
+          <h1>JarvisApp</h1>
+          <button
+            className="settings-button"
+            onClick={() => setShowSettings(true)}
+            title="Settings"
+          >
+            ⚙️
+          </button>
+        </div>
         
         {/* Status Display */}
         <div className="status">
@@ -333,6 +344,13 @@ function App() {
           onConfirm={confirmDelete}
           onCancel={cancelDelete}
         />
+
+        {/* Settings Panel */}
+        {showSettings && (
+          <div className="dialog-overlay">
+            <Settings onClose={() => setShowSettings(false)} />
+          </div>
+        )}
       </div>
     </div>
   );

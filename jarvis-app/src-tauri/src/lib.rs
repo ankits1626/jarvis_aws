@@ -4,14 +4,16 @@ pub mod error;
 pub mod files;
 pub mod platform;
 pub mod recording;
+pub mod settings;
 pub mod shortcuts;
 pub mod transcription;
 pub mod wav;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, RwLock};
 use tauri::Manager;
 use files::FileManager;
 use recording::RecordingManager;
+use settings::{ModelManager, SettingsManager};
 use shortcuts::ShortcutManager;
 use transcription::{TranscriptionConfig, TranscriptionManager, HybridProvider, TranscriptionProvider};
 
@@ -27,13 +29,29 @@ pub fn run() {
                 .map_err(|e| format!("Failed to initialize FileManager: {}", e))?;
             app.manage(file_manager);
             
+            // Initialize SettingsManager and add to managed state (wrapped in Arc<RwLock>)
+            let settings_manager = SettingsManager::new()
+                .map_err(|e| format!("Failed to initialize SettingsManager: {}", e))?;
+            app.manage(Arc::new(RwLock::new(settings_manager)));
+            
+            // Initialize ModelManager and add to managed state (wrapped in Arc)
+            let model_manager = ModelManager::new(app.handle().clone())
+                .map_err(|e| format!("Failed to initialize ModelManager: {}", e))?;
+            app.manage(Arc::new(model_manager));
+            
             // Initialize RecordingManager with AppHandle and add to managed state (wrapped in Mutex)
             let recording_manager = RecordingManager::new(app.handle().clone());
             app.manage(Mutex::new(recording_manager));
             
             // Initialize TranscriptionManager with HybridProvider
-            // Create TranscriptionConfig from environment variables
-            let transcription_config = TranscriptionConfig::from_env();
+            // Load settings from SettingsManager
+            let settings_manager = app.state::<Arc<RwLock<SettingsManager>>>();
+            let settings = settings_manager.read()
+                .expect("Failed to acquire settings read lock")
+                .get();
+            
+            // Create TranscriptionConfig from settings with environment variable overrides
+            let transcription_config = TranscriptionConfig::from_settings(&settings.transcription);
             
             // Validate configuration - skip initialization if invalid
             if let Err(e) = transcription_config.validate() {
@@ -41,8 +59,8 @@ pub fn run() {
                 eprintln!("Transcription will be disabled. Recording will continue to work.");
                 // Don't initialize provider with invalid config
             } else {
-                // Initialize HybridProvider with graceful degradation
-                let mut provider = HybridProvider::new();
+                // Initialize HybridProvider with settings
+                let mut provider = HybridProvider::new(&settings.transcription, app.handle().clone());
                 
                 // Initialize the provider with config (loads models)
                 match provider.initialize(&transcription_config) {
@@ -83,6 +101,12 @@ pub fn run() {
             commands::open_system_settings,
             commands::get_transcript,
             commands::get_transcription_status,
+            commands::get_settings,
+            commands::update_settings,
+            commands::list_models,
+            commands::download_model,
+            commands::cancel_download,
+            commands::delete_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

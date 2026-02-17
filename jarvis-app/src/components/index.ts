@@ -7,3 +7,5 @@ export { PermissionDialog } from './PermissionDialog';
 export { ErrorToast } from './ErrorToast';
 export { DeleteConfirmDialog } from './DeleteConfirmDialog';
 export { TranscriptDisplay } from './TranscriptDisplay';
+export { Settings } from './Settings';
+export { ModelList } from './ModelList';
