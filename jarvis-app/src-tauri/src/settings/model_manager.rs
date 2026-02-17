@@ -5,10 +5,24 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex as TokioMutex;
 use tokio_util::sync::CancellationToken;
 
-/// Information about a Whisper model
+/// Static metadata for a model in the catalog
+struct ModelEntry {
+    filename: &'static str,
+    display_name: &'static str,
+    description: &'static str,
+    size_estimate: &'static str,
+    quality_tier: &'static str,
+    download_url: &'static str,
+}
+
+/// Information about a Whisper model (returned to frontend)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
     pub filename: String,
+    pub display_name: String,
+    pub description: String,
+    pub size_estimate: String,
+    pub quality_tier: String,
     pub status: ModelStatus,
 }
 
@@ -38,24 +52,105 @@ pub struct ModelManager {
 }
 
 impl ModelManager {
-    /// Supported Whisper model names
-    const SUPPORTED_MODELS: &'static [&'static str] = &[
-        "ggml-tiny.en.bin",
-        "ggml-base.en.bin",
-        "ggml-small.en.bin",
-        "ggml-medium.en.bin",
+    /// Model catalog with metadata for all supported Whisper models.
+    /// Models are ordered by quality tier (basic → best) for UI display.
+    const MODEL_CATALOG: &'static [ModelEntry] = &[
+        ModelEntry {
+            filename: "ggml-tiny.en.bin",
+            display_name: "Tiny (English)",
+            description: "Fastest, lowest accuracy. Good for testing.",
+            size_estimate: "75 MB",
+            quality_tier: "basic",
+            download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
+        },
+        ModelEntry {
+            filename: "ggml-base.en.bin",
+            display_name: "Base (English)",
+            description: "Fast with reasonable accuracy. ~10% WER.",
+            size_estimate: "142 MB",
+            quality_tier: "basic",
+            download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
+        },
+        ModelEntry {
+            filename: "ggml-small.en.bin",
+            display_name: "Small (English)",
+            description: "Balanced speed and accuracy.",
+            size_estimate: "466 MB",
+            quality_tier: "good",
+            download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin",
+        },
+        ModelEntry {
+            filename: "ggml-medium.en.bin",
+            display_name: "Medium (English)",
+            description: "Good accuracy, moderate speed. ~7.5% WER.",
+            size_estimate: "1.5 GB",
+            quality_tier: "good",
+            download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en.bin",
+        },
+        ModelEntry {
+            filename: "ggml-medium.en-q5_0.bin",
+            display_name: "Medium Q5 (English)",
+            description: "Quantized medium — 3x smaller, similar accuracy.",
+            size_estimate: "514 MB",
+            quality_tier: "good",
+            download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en-q5_0.bin",
+        },
+        ModelEntry {
+            filename: "ggml-large-v3-turbo-q5_0.bin",
+            display_name: "Large V3 Turbo Q5",
+            description: "Best value: near-large accuracy, fast inference. ~7.75% WER. Recommended.",
+            size_estimate: "547 MB",
+            quality_tier: "great",
+            download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+        },
+        ModelEntry {
+            filename: "ggml-large-v3-turbo-q8_0.bin",
+            display_name: "Large V3 Turbo Q8",
+            description: "Higher precision quantized turbo. Slightly better than Q5.",
+            size_estimate: "834 MB",
+            quality_tier: "great",
+            download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q8_0.bin",
+        },
+        ModelEntry {
+            filename: "ggml-large-v3-turbo.bin",
+            display_name: "Large V3 Turbo",
+            description: "Full precision turbo. 6x faster than Large V3.",
+            size_estimate: "1.5 GB",
+            quality_tier: "great",
+            download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+        },
+        ModelEntry {
+            filename: "ggml-distil-large-v3.bin",
+            display_name: "Distil Large V3",
+            description: "Distilled from Large V3. 5x faster, within 0.8% WER.",
+            size_estimate: "1.5 GB",
+            quality_tier: "great",
+            download_url: "https://huggingface.co/distil-whisper/distil-large-v3-ggml/resolve/main/ggml-distil-large-v3.bin",
+        },
+        ModelEntry {
+            filename: "ggml-large-v3-q5_0.bin",
+            display_name: "Large V3 Q5",
+            description: "Quantized Large V3. Best accuracy in compact form.",
+            size_estimate: "1.1 GB",
+            quality_tier: "best",
+            download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-q5_0.bin",
+        },
+        ModelEntry {
+            filename: "ggml-large-v3.bin",
+            display_name: "Large V3",
+            description: "Highest accuracy, slowest. ~7.4% WER. Needs 16GB+ RAM.",
+            size_estimate: "2.9 GB",
+            quality_tier: "best",
+            download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
+        },
     ];
-    
+
     /// GGML magic number (0x67676d6c = "ggml" in ASCII)
-    /// Note: Newer whisper.cpp models may use GGUF format (0x67676a74).
-    /// Current HuggingFace models are GGML, but this may need updating if they switch to GGUF.
+    /// All whisper.cpp models use GGML format (not GGUF which is used by llama.cpp).
     const GGML_MAGIC: u32 = 0x67676d6c;
-    
+
     /// Minimum valid GGML file size (1MB)
     const MIN_GGML_SIZE: u64 = 1_048_576;
-    
-    /// Hugging Face base URL for Whisper models
-    const HF_BASE_URL: &'static str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
     
     /// Creates a new ModelManager
     /// 
@@ -86,39 +181,41 @@ impl ModelManager {
         })
     }
     
-    /// Returns the list of supported model names
+    /// Returns the list of supported model filenames
     pub fn supported_models() -> Vec<&'static str> {
-        Self::SUPPORTED_MODELS.to_vec()
+        Self::MODEL_CATALOG.iter().map(|e| e.filename).collect()
     }
-    
-    /// Lists all supported models with their status
-    /// 
-    /// Returns a ModelInfo for each supported model with status:
+
+    /// Look up a catalog entry by filename
+    fn catalog_entry(filename: &str) -> Option<&'static ModelEntry> {
+        Self::MODEL_CATALOG.iter().find(|e| e.filename == filename)
+    }
+
+    /// Lists all supported models with their status and metadata
+    ///
+    /// Returns a ModelInfo for each catalog entry with status:
     /// - Downloaded: Model file exists on disk (includes file size)
     /// - Downloading: Model is currently being downloaded (includes progress)
     /// - Error: Previous download failed (includes error message)
     /// - NotDownloaded: Model is not available locally
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>, String> {
         let mut models = Vec::new();
-        
+
         let download_queue = self.download_queue.lock().await;
         let error_states = self.error_states.lock().await;
-        
-        for &model_name in Self::SUPPORTED_MODELS {
-            let model_path = self.models_dir.join(model_name);
-            
-            let status = if let Some(download_state) = download_queue.get(model_name) {
-                // Model is currently downloading
+
+        for entry in Self::MODEL_CATALOG {
+            let model_path = self.models_dir.join(entry.filename);
+
+            let status = if let Some(download_state) = download_queue.get(entry.filename) {
                 ModelStatus::Downloading {
                     progress: download_state.progress,
                 }
-            } else if let Some(error_msg) = error_states.get(model_name) {
-                // Previous download failed
+            } else if let Some(error_msg) = error_states.get(entry.filename) {
                 ModelStatus::Error {
                     message: error_msg.clone(),
                 }
             } else if model_path.exists() {
-                // Model is downloaded
                 match std::fs::metadata(&model_path) {
                     Ok(metadata) => ModelStatus::Downloaded {
                         size_bytes: metadata.len(),
@@ -128,16 +225,19 @@ impl ModelManager {
                     },
                 }
             } else {
-                // Model is not downloaded
                 ModelStatus::NotDownloaded
             };
-            
+
             models.push(ModelInfo {
-                filename: model_name.to_string(),
+                filename: entry.filename.to_string(),
+                display_name: entry.display_name.to_string(),
+                description: entry.description.to_string(),
+                size_estimate: entry.size_estimate.to_string(),
+                quality_tier: entry.quality_tier.to_string(),
                 status,
             });
         }
-        
+
         Ok(models)
     }
     
@@ -186,9 +286,11 @@ impl ModelManager {
         Ok(())
     }
     
-    /// Constructs the download URL for a model
-    fn download_url(model_name: &str) -> String {
-        format!("{}/{}", Self::HF_BASE_URL, model_name)
+    /// Returns the download URL for a model from the catalog
+    fn download_url(model_name: &str) -> Result<String, String> {
+        Self::catalog_entry(model_name)
+            .map(|e| e.download_url.to_string())
+            .ok_or_else(|| format!("Model '{}' not found in catalog", model_name))
     }
     
     /// Downloads a model from Hugging Face
@@ -204,8 +306,8 @@ impl ModelManager {
     /// - Model name is not in supported list
     /// - Model is already being downloaded
     pub async fn download_model(&self, model_name: String) -> Result<(), String> {
-        // Validate model name
-        if !Self::SUPPORTED_MODELS.contains(&model_name.as_str()) {
+        // Validate model name against catalog
+        if Self::catalog_entry(&model_name).is_none() {
             return Err(format!("Unsupported model: {}", model_name));
         }
         
@@ -283,7 +385,7 @@ impl ModelManager {
     ) -> Result<(), String> {
         use tokio::io::AsyncWriteExt;
         
-        let url = Self::download_url(&model_name);
+        let url = Self::download_url(&model_name)?;
         let temp_path = models_dir.join(format!("{}.tmp", model_name));
         let final_path = models_dir.join(&model_name);
         

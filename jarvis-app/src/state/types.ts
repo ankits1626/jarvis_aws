@@ -213,7 +213,19 @@ export type ModelStatus =
 export interface ModelInfo {
   /** Model filename (e.g., "ggml-base.en.bin") */
   filename: string;
-  
+
+  /** Human-readable display name (e.g., "Large V3 Turbo Q5") */
+  display_name: string;
+
+  /** Short description of the model */
+  description: string;
+
+  /** Estimated download size (e.g., "547 MB") */
+  size_estimate: string;
+
+  /** Quality tier: "basic", "good", "great", or "best" */
+  quality_tier: string;
+
   /** Current status of the model */
   status: ModelStatus;
 }

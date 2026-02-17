@@ -89,24 +89,43 @@ impl TranscriptionProvider for WhisperProvider {
         let mut state = context.create_state()
             .map_err(|e| format!("Failed to create Whisper state: {}", e))?;
         
-        // Configure full parameters with Greedy sampling
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        
+        // Configure full parameters with Greedy sampling (5 candidates)
+        // best_of=5 explores multiple hypotheses — much better than best_of=1
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 5 });
+
         // Set thread count if configured
         if let Some(threads) = self.thread_count {
             params.set_n_threads(threads as i32);
         }
-        
+
         // Pass previous tokens as prompt for context continuity
         if !self.previous_tokens.is_empty() {
             params.set_tokens(&self.previous_tokens);
         }
-        
+
         // Set language to English
         params.set_language(Some("en"));
-        
+
         // Disable translation (we want transcription, not translation)
         params.set_translate(false);
+
+        // Anti-hallucination parameters
+        // Temperature 0.0 = deterministic; fallback increments retry with more randomness
+        params.set_temperature(0.0);
+        params.set_temperature_inc(0.2);
+
+        // Filter low-confidence gibberish (compression ratio proxy)
+        params.set_entropy_thold(2.4);
+
+        // Log probability threshold — reject very unlikely segments
+        params.set_logprob_thold(-1.0);
+
+        // Suppress blank/silence outputs and non-speech tokens
+        params.set_suppress_blank(true);
+        params.set_suppress_non_speech_tokens(true);
+
+        // Reject segments where model thinks no speech is present
+        params.set_no_speech_thold(0.4);
         
         // Run inference
         state.full(params, audio)

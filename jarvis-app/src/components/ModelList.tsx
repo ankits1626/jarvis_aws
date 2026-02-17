@@ -9,6 +9,13 @@ interface ModelListProps {
   onDownloadStarted?: (modelName: string) => void;
 }
 
+const TIER_LABELS: Record<string, { label: string; color: string }> = {
+  basic: { label: 'Basic', color: '#888' },
+  good: { label: 'Good', color: '#2196F3' },
+  great: { label: 'Great', color: '#4CAF50' },
+  best: { label: 'Best', color: '#FF9800' },
+};
+
 export function ModelList({ models, selectedModel, onModelSelected, onDownloadStarted }: ModelListProps) {
   const [deletingModel, setDeletingModel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -72,7 +79,6 @@ export function ModelList({ models, selectedModel, onModelSelected, onDownloadSt
 
   const confirmDelete = (modelName: string) => {
     if (modelName === selectedModel) {
-      // Show warning for selected model
       if (window.confirm(
         `"${modelName}" is currently selected. Deleting it will require you to select a different model. Continue?`
       )) {
@@ -91,10 +97,11 @@ export function ModelList({ models, selectedModel, onModelSelected, onDownloadSt
           <button onClick={() => setError(null)} className="dismiss-button">×</button>
         </div>
       )}
-      
+
       {models.map((model) => {
         const isSelected = model.filename === selectedModel;
         const isDeleting = deletingModel === model.filename;
+        const tier = TIER_LABELS[model.quality_tier] || TIER_LABELS.basic;
 
         return (
           <div
@@ -102,12 +109,18 @@ export function ModelList({ models, selectedModel, onModelSelected, onDownloadSt
             className={`model-item ${isSelected ? 'selected' : ''}`}
           >
             <div className="model-info">
-              <span className="model-name">{model.filename}</span>
-              
+              <div className="model-header">
+                <span className="model-name">{model.display_name}</span>
+                <span className="model-tier" style={{ color: tier.color }}>{tier.label}</span>
+                <span className="model-size-estimate">{model.size_estimate}</span>
+              </div>
+              <div className="model-description">{model.description}</div>
+              <div className="model-filename">{model.filename}</div>
+
               {model.status.type === 'downloaded' && (
                 <span className="model-size">{formatBytes(model.status.size_bytes)}</span>
               )}
-              
+
               {model.status.type === 'error' && (
                 <span className="model-error">Error: {model.status.message}</span>
               )}

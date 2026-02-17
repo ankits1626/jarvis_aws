@@ -83,7 +83,7 @@ impl TranscriptionManager {
         
         // Spawn background transcription task
         tokio::spawn(async move {
-            let mut audio_buffer = AudioBuffer::new(3.0, 0.5, 16000);
+            let mut audio_buffer = AudioBuffer::new(5.0, 0.5, 16000);
             let mut total_chunks = 0usize;
             let mut total_segments = 0usize;
             let mut total_windows = 0usize;
