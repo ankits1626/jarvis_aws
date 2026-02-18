@@ -194,6 +194,15 @@ export interface TranscriptionSettings {
   
   /** Whisper model filename (e.g., "ggml-base.en.bin") */
   whisper_model: string;
+  
+  /** Transcription engine: "whisper-rs" (whisper.cpp) or "whisperkit" (Apple Neural Engine) */
+  transcription_engine: "whisper-rs" | "whisperkit";
+  
+  /** WhisperKit model name (e.g., "openai_whisper-large-v3_turbo") */
+  whisperkit_model: string;
+
+  /** Audio window duration in seconds (1.0 to 10.0) for batch transcription */
+  window_duration: number;
 }
 
 /** Main settings structure matching Rust Settings struct */
@@ -256,3 +265,12 @@ export interface ModelDownloadErrorEvent {
 
 /** Payload for settings-changed event */
 export type SettingsChangedEvent = Settings;
+
+/** WhisperKit availability status matching Rust WhisperKitStatus struct */
+export interface WhisperKitStatus {
+  /** Whether WhisperKit is available on this system */
+  available: boolean;
+  
+  /** Reason why WhisperKit is unavailable (null if available) */
+  reason?: string;
+}

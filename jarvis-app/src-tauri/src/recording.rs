@@ -411,6 +411,11 @@ impl RecordingManager {
         tokio::spawn(async move {
             if let Some(transcription_manager_mutex) = app_handle_clone.try_state::<tokio::sync::Mutex<TranscriptionManager>>() {
                 let mut transcription_manager = transcription_manager_mutex.lock().await;
+                // Update window_duration from latest settings
+                if let Some(settings_manager) = app_handle_clone.try_state::<std::sync::Arc<crate::settings::SettingsManager>>() {
+                    let window_dur = settings_manager.get().transcription.window_duration;
+                    transcription_manager.set_window_duration(window_dur);
+                }
                 if let Err(e) = transcription_manager.start(rx).await {
                     eprintln!("Warning: Failed to start transcription: {}", e);
                     // Don't fail recording start if transcription fails

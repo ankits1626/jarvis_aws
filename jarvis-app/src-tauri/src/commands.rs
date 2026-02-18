@@ -2,10 +2,21 @@ use crate::files::{FileManager, RecordingMetadata};
 use crate::platform::PlatformDetector;
 use crate::recording::RecordingManager;
 use crate::settings::{ModelManager, Settings, SettingsManager};
-use crate::transcription::{TranscriptionManager, TranscriptionSegment, TranscriptionStatus};
+use crate::transcription::{TranscriptionManager, TranscriptionSegment, TranscriptionStatus, WhisperKitProvider};
 use crate::wav::WavConverter;
+use serde::Serialize;
 use std::sync::{Arc, Mutex, RwLock};
 use tauri::{Emitter, State};
+
+/// WhisperKit availability status
+/// 
+/// This struct contains information about whether WhisperKit is available
+/// on the current system and the reason if it's not available.
+#[derive(Debug, Clone, Serialize)]
+pub struct WhisperKitStatus {
+    pub available: bool,
+    pub reason: Option<String>,
+}
 
 /// Start a new audio recording
 /// 
@@ -688,6 +699,159 @@ pub async fn delete_model(
     state: State<'_, Arc<ModelManager>>,
 ) -> Result<(), String> {
     state.delete_model(model_name).await
+}
+
+/// Check WhisperKit availability on the current system
+/// 
+/// This command checks if WhisperKit can be used on the current system by
+/// verifying:
+/// - Apple Silicon (aarch64) architecture
+/// - macOS 14.0 or later
+/// - whisperkit-cli binary is installed
+/// 
+/// # Returns
+/// 
+/// * `Ok(WhisperKitStatus)` - Status object with availability and reason
+/// * `Err(String)` - Never returns an error (always succeeds)
+/// 
+/// # Examples
+/// 
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+/// 
+/// interface WhisperKitStatus {
+///   available: boolean;
+///   reason?: string;
+/// }
+/// 
+/// try {
+///   const status: WhisperKitStatus = await invoke('check_whisperkit_status');
+///   if (status.available) {
+///     console.log('WhisperKit is available');
+///   } else {
+///     console.log(`WhisperKit unavailable: ${status.reason}`);
+///   }
+/// } catch (error) {
+///   console.error(`Failed to check WhisperKit status: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub fn check_whisperkit_status() -> Result<WhisperKitStatus, String> {
+    // Create a temporary WhisperKitProvider to check availability
+    // We use a dummy model name since we're only checking availability
+    let provider = WhisperKitProvider::new("dummy");
+    
+    Ok(WhisperKitStatus {
+        available: provider.is_available(),
+        reason: provider.unavailable_reason().map(|s| s.to_string()),
+    })
+}
+
+/// List all supported WhisperKit models with their status
+/// 
+/// This command returns information about all supported WhisperKit models including:
+/// - Downloaded models (with directory size)
+/// - Models not yet downloaded
+/// 
+/// # Arguments
+/// 
+/// * `state` - Managed state containing the ModelManager (wrapped in Arc)
+/// 
+/// # Returns
+/// 
+/// * `Ok(Vec<ModelInfo>)` - Array of model information
+/// * `Err(String)` - Error message if listing fails
+/// 
+/// # Examples
+/// 
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+/// 
+/// interface ModelInfo {
+///   filename: string;
+///   display_name: string;
+///   description: string;
+///   size_estimate: string;
+///   quality_tier: string;
+///   status: 
+///     | { type: 'downloaded'; size_bytes: number }
+///     | { type: 'notdownloaded' };
+/// }
+/// 
+/// try {
+///   const models: ModelInfo[] = await invoke('list_whisperkit_models');
+///   console.log(`Found ${models.length} WhisperKit models`);
+/// } catch (error) {
+///   console.error(`Failed to list WhisperKit models: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn list_whisperkit_models(
+    state: State<'_, Arc<ModelManager>>,
+) -> Result<Vec<crate::settings::ModelInfo>, String> {
+    state.list_whisperkit_models().await
+}
+
+/// Download a WhisperKit model using whisperkit-cli
+/// 
+/// This command initiates a model download in the background using whisperkit-cli.
+/// Progress is reported via "model-download-progress" events, and completion/errors
+/// are reported via "model-download-complete" and "model-download-error" events.
+/// 
+/// The command returns immediately after spawning the download task.
+/// 
+/// # Arguments
+/// 
+/// * `model_name` - Name of the model to download (e.g., "openai_whisper-large-v3_turbo")
+/// * `state` - Managed state containing the ModelManager (wrapped in Arc)
+/// 
+/// # Returns
+/// 
+/// * `Ok(())` - Download started successfully
+/// * `Err(String)` - Error message if download cannot be started
+/// 
+/// # Errors
+/// 
+/// Returns an error if:
+/// - Model name is not in the supported list
+/// - whisperkit-cli is not installed
+/// 
+/// # Examples
+/// 
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+/// import { listen } from '@tauri-apps/api/event';
+/// 
+/// // Listen for progress events
+/// listen('model-download-progress', (event) => {
+///   console.log(`Progress: ${event.payload.progress}%`);
+/// });
+/// 
+/// // Listen for completion
+/// listen('model-download-complete', (event) => {
+///   console.log(`Download complete: ${event.payload.model_name}`);
+/// });
+/// 
+/// // Listen for errors
+/// listen('model-download-error', (event) => {
+///   console.error(`Download error: ${event.payload.error}`);
+/// });
+/// 
+/// try {
+///   await invoke('download_whisperkit_model', { 
+///     modelName: 'openai_whisper-large-v3_turbo' 
+///   });
+///   console.log('Download started');
+/// } catch (error) {
+///   console.error(`Failed to start download: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn download_whisperkit_model(
+    model_name: String,
+    state: State<'_, Arc<ModelManager>>,
+) -> Result<(), String> {
+    state.download_whisperkit_model(model_name).await
 }
 
 #[cfg(test)]

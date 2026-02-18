@@ -15,7 +15,7 @@ use files::FileManager;
 use recording::RecordingManager;
 use settings::{ModelManager, SettingsManager};
 use shortcuts::ShortcutManager;
-use transcription::{TranscriptionConfig, TranscriptionManager, HybridProvider, TranscriptionProvider};
+use transcription::{TranscriptionConfig, TranscriptionManager, HybridProvider, WhisperKitProvider, TranscriptionProvider};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -43,7 +43,7 @@ pub fn run() {
             let recording_manager = RecordingManager::new(app.handle().clone());
             app.manage(Mutex::new(recording_manager));
             
-            // Initialize TranscriptionManager with HybridProvider
+            // Initialize TranscriptionManager with selected provider
             // Load settings from SettingsManager
             let settings_manager = app.state::<Arc<RwLock<SettingsManager>>>();
             let settings = settings_manager.read()
@@ -59,28 +59,78 @@ pub fn run() {
                 eprintln!("Transcription will be disabled. Recording will continue to work.");
                 // Don't initialize provider with invalid config
             } else {
-                // Initialize HybridProvider with settings
-                let mut provider = HybridProvider::new(&settings.transcription, app.handle().clone());
+                // Select provider based on transcription_engine setting
+                let engine = settings.transcription.transcription_engine.as_str();
+                eprintln!("TranscriptionManager: Selected engine: {}", engine);
                 
-                // Initialize the provider with config (loads models)
-                match provider.initialize(&transcription_config) {
-                    Ok(()) => {
-                        eprintln!("TranscriptionManager: Initialized with provider '{}'", provider.name());
-                        
-                        // Create TranscriptionManager with the provider
-                        let transcription_manager = TranscriptionManager::new(
-                            Box::new(provider),
-                            app.handle().clone()
-                        );
-                        
-                        // Add to managed state wrapped in tokio::sync::Mutex (not std::sync::Mutex)
-                        app.manage(tokio::sync::Mutex::new(transcription_manager));
+                // Helper closure to create and initialize HybridProvider fallback
+                let create_hybrid_fallback = || -> Option<Box<dyn TranscriptionProvider>> {
+                    let mut hybrid = HybridProvider::new(&settings.transcription, app.handle().clone());
+                    match hybrid.initialize(&transcription_config) {
+                        Ok(()) => {
+                            eprintln!("TranscriptionManager: Initialized fallback provider '{}'", hybrid.name());
+                            Some(Box::new(hybrid))
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: Failed to initialize fallback HybridProvider: {}", e);
+                            None
+                        }
                     }
-                    Err(e) => {
-                        eprintln!("Warning: Failed to initialize HybridProvider: {}", e);
-                        eprintln!("Transcription will be disabled. Recording will continue to work.");
-                        // Don't add TranscriptionManager to state - RecordingManager will handle gracefully
+                };
+                
+                let provider: Option<Box<dyn TranscriptionProvider>> = match engine {
+                    "whisperkit" => {
+                        // Try to create WhisperKitProvider
+                        let model_name = &settings.transcription.whisperkit_model;
+                        let mut whisperkit_provider = WhisperKitProvider::new(model_name);
+                        
+                        if !whisperkit_provider.is_available() {
+                            let reason = whisperkit_provider.unavailable_reason()
+                                .unwrap_or("Unknown reason");
+                            eprintln!("Warning: WhisperKit unavailable: {}", reason);
+                            eprintln!("Falling back to whisper-rs (HybridProvider)");
+                            create_hybrid_fallback()
+                        } else {
+                            // WhisperKit is available, try to initialize it
+                            match whisperkit_provider.initialize(&transcription_config) {
+                                Ok(()) => {
+                                    eprintln!("TranscriptionManager: Initialized with provider '{}'", whisperkit_provider.name());
+                                    Some(Box::new(whisperkit_provider))
+                                }
+                                Err(e) => {
+                                    eprintln!("Warning: Failed to initialize WhisperKitProvider: {}", e);
+                                    eprintln!("Falling back to whisper-rs (HybridProvider)");
+                                    create_hybrid_fallback()
+                                }
+                            }
+                        }
                     }
+                    _ => {
+                        // Default to HybridProvider (whisper-rs)
+                        let mut hybrid = HybridProvider::new(&settings.transcription, app.handle().clone());
+                        match hybrid.initialize(&transcription_config) {
+                            Ok(()) => {
+                                eprintln!("TranscriptionManager: Initialized with provider '{}'", hybrid.name());
+                                Some(Box::new(hybrid))
+                            }
+                            Err(e) => {
+                                eprintln!("Warning: Failed to initialize HybridProvider: {}", e);
+                                None
+                            }
+                        }
+                    }
+                };
+                
+                // If we successfully created a provider, add TranscriptionManager to state
+                if let Some(provider) = provider {
+                    let transcription_manager = TranscriptionManager::new(
+                        provider,
+                        app.handle().clone(),
+                        settings.transcription.window_duration,
+                    );
+                    app.manage(tokio::sync::Mutex::new(transcription_manager));
+                } else {
+                    eprintln!("Transcription will be disabled. Recording will continue to work.");
                 }
             }
             
@@ -107,6 +157,9 @@ pub fn run() {
             commands::download_model,
             commands::cancel_download,
             commands::delete_model,
+            commands::check_whisperkit_status,
+            commands::list_whisperkit_models,
+            commands::download_whisperkit_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

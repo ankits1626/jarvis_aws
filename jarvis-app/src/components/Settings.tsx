@@ -9,6 +9,7 @@ import type {
   ModelDownloadCompleteEvent,
   ModelDownloadErrorEvent,
   SettingsChangedEvent,
+  WhisperKitStatus,
 } from '../state/types';
 
 interface SettingsProps {
@@ -18,20 +19,26 @@ interface SettingsProps {
 export function Settings({ onClose }: SettingsProps) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const [whisperKitModels, setWhisperKitModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [whisperKitStatus, setWhisperKitStatus] = useState<WhisperKitStatus | null>(null);
 
   // Load settings and models on mount
   useEffect(() => {
     const loadData = async () => {
       try {
         setLoading(true);
-        const [settingsData, modelsData] = await Promise.all([
+        const [settingsData, modelsData, whisperKitModelsData, whisperKitStatusData] = await Promise.all([
           invoke<Settings>('get_settings'),
           invoke<ModelInfo[]>('list_models'),
+          invoke<ModelInfo[]>('list_whisperkit_models'),
+          invoke<WhisperKitStatus>('check_whisperkit_status'),
         ]);
         setSettings(settingsData);
         setModels(modelsData);
+        setWhisperKitModels(whisperKitModelsData);
+        setWhisperKitStatus(whisperKitStatusData);
         setError(null);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -54,19 +61,20 @@ export function Settings({ onClose }: SettingsProps) {
     };
   }, []);
 
-  // Listen for model-download-progress events
+  // Listen for model-download-progress events (updates both whisper and whisperkit models)
   useEffect(() => {
     const unlisten = listen<ModelProgressEvent>('model-download-progress', (event) => {
-      setModels((prevModels) =>
+      const updateModels = (prevModels: ModelInfo[]) =>
         prevModels.map((model) =>
           model.filename === event.payload.model_name
             ? {
                 ...model,
-                status: { type: 'downloading', progress: event.payload.progress },
+                status: { type: 'downloading' as const, progress: event.payload.progress },
               }
             : model
-        )
-      );
+        );
+      setModels(updateModels);
+      setWhisperKitModels(updateModels);
     });
 
     return () => {
@@ -74,13 +82,17 @@ export function Settings({ onClose }: SettingsProps) {
     };
   }, []);
 
-  // Listen for model-download-complete events
+  // Listen for model-download-complete events (refreshes both model lists)
   useEffect(() => {
     const unlisten = listen<ModelDownloadCompleteEvent>('model-download-complete', async () => {
-      // Refresh model list to get updated status
+      // Refresh both model lists to get updated status
       try {
-        const modelsData = await invoke<ModelInfo[]>('list_models');
+        const [modelsData, whisperKitModelsData] = await Promise.all([
+          invoke<ModelInfo[]>('list_models'),
+          invoke<ModelInfo[]>('list_whisperkit_models'),
+        ]);
         setModels(modelsData);
+        setWhisperKitModels(whisperKitModelsData);
       } catch (err) {
         console.error('Failed to refresh models:', err);
       }
@@ -91,19 +103,20 @@ export function Settings({ onClose }: SettingsProps) {
     };
   }, []);
 
-  // Listen for model-download-error events
+  // Listen for model-download-error events (updates both whisper and whisperkit models)
   useEffect(() => {
     const unlisten = listen<ModelDownloadErrorEvent>('model-download-error', (event) => {
-      setModels((prevModels) =>
+      const updateModels = (prevModels: ModelInfo[]) =>
         prevModels.map((model) =>
           model.filename === event.payload.model_name
             ? {
                 ...model,
-                status: { type: 'error', message: event.payload.error },
+                status: { type: 'error' as const, message: event.payload.error },
               }
             : model
-        )
-      );
+        );
+      setModels(updateModels);
+      setWhisperKitModels(updateModels);
     });
 
     return () => {
@@ -184,6 +197,51 @@ export function Settings({ onClose }: SettingsProps) {
     }
   };
 
+  const handleWindowDurationChange = async (duration: number) => {
+    try {
+      const updatedSettings = {
+        ...settings,
+        transcription: {
+          ...settings.transcription,
+          window_duration: duration,
+        },
+      };
+      await invoke('update_settings', { settings: updatedSettings });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleEngineChange = async (engine: "whisper-rs" | "whisperkit") => {
+    try {
+      const updatedSettings = {
+        ...settings,
+        transcription: {
+          ...settings.transcription,
+          transcription_engine: engine,
+        },
+      };
+      await invoke('update_settings', { settings: updatedSettings });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleCheckWhisperKitAgain = async () => {
+    try {
+      const status = await invoke<WhisperKitStatus>('check_whisperkit_status');
+      setWhisperKitStatus(status);
+      
+      // If now available, also refresh the model list
+      if (status.available) {
+        const modelsData = await invoke<ModelInfo[]>('list_whisperkit_models');
+        setWhisperKitModels(modelsData);
+      }
+    } catch (err) {
+      console.error('Failed to check WhisperKit status:', err);
+    }
+  };
+
   return (
     <div className="settings-panel">
       <div className="settings-header">
@@ -191,6 +249,46 @@ export function Settings({ onClose }: SettingsProps) {
         <button onClick={onClose} className="close-button">×</button>
       </div>
       <div className="settings-content">
+        <section className="settings-section">
+          <h3>Transcription Engine</h3>
+          <div className="engine-options">
+            <label className="engine-option">
+              <input
+                type="radio"
+                name="engine"
+                value="whisper-rs"
+                checked={settings.transcription.transcription_engine === "whisper-rs"}
+                onChange={() => handleEngineChange("whisper-rs")}
+              />
+              <span>whisper.cpp (Metal GPU)</span>
+            </label>
+            <label className={`engine-option ${!whisperKitStatus?.available ? 'engine-unavailable' : ''}`}>
+              <input
+                type="radio"
+                name="engine"
+                value="whisperkit"
+                checked={settings.transcription.transcription_engine === "whisperkit"}
+                disabled={!whisperKitStatus?.available}
+                onChange={() => handleEngineChange("whisperkit")}
+              />
+              <span>WhisperKit (Apple Neural Engine)</span>
+              {!whisperKitStatus?.available && whisperKitStatus?.reason && (
+                <span className="engine-reason"> — {whisperKitStatus.reason}</span>
+              )}
+            </label>
+          </div>
+          {!whisperKitStatus?.available && (
+            <div className="whisperkit-install-info">
+              <p>WhisperKit requires Apple Silicon and macOS 14+.</p>
+              <p>Install: <code>brew install whisperkit-cli</code></p>
+              <button onClick={handleCheckWhisperKitAgain} className="check-again-button">
+                Check Again
+              </button>
+            </div>
+          )}
+          <p className="engine-note">Engine changes take effect after app restart.</p>
+        </section>
+
         <section className="settings-section">
           <h3>Voice Activity Detection (VAD)</h3>
           <div className="setting-row">
@@ -237,6 +335,27 @@ export function Settings({ onClose }: SettingsProps) {
         </section>
 
         <section className="settings-section">
+          <h3>Audio Window</h3>
+          <div className="setting-row">
+            <label htmlFor="window-duration">
+              Window Duration: {settings.transcription.window_duration.toFixed(1)}s
+            </label>
+            <input
+              type="range"
+              id="window-duration"
+              min="1"
+              max="10"
+              step="0.5"
+              value={settings.transcription.window_duration}
+              onChange={(e) => handleWindowDurationChange(parseFloat(e.target.value))}
+            />
+            <p className="setting-info">
+              Shorter = lower latency, longer = better accuracy. Takes effect on next recording.
+            </p>
+          </div>
+        </section>
+
+        <section className="settings-section">
           <h3>Whisper (Accurate Finals)</h3>
           <div className="setting-row">
             <label htmlFor="whisper-enabled">
@@ -253,30 +372,68 @@ export function Settings({ onClose }: SettingsProps) {
         </section>
 
         <section className="settings-section">
-          <h3>Whisper Models</h3>
-          <ModelList
-            models={models}
-            selectedModel={settings.transcription.whisper_model}
-            onModelSelected={async () => {
-              // Refresh model list after selection or deletion
-              try {
-                const modelsData = await invoke<ModelInfo[]>('list_models');
-                setModels(modelsData);
-              } catch (err) {
-                console.error('Failed to refresh models:', err);
-              }
-            }}
-            onDownloadStarted={(modelName) => {
-              // Optimistic UI update: show downloading state immediately
-              setModels((prev) =>
-                prev.map((m) =>
-                  m.filename === modelName
-                    ? { ...m, status: { type: 'downloading', progress: 0 } }
-                    : m
-                )
-              );
-            }}
-          />
+          <h3>
+            {settings.transcription.transcription_engine === "whisperkit" 
+              ? "WhisperKit Models" 
+              : "Whisper Models"}
+          </h3>
+          {settings.transcription.transcription_engine === "whisperkit" ? (
+            <ModelList
+              models={whisperKitModels}
+              selectedModel={settings.transcription.whisperkit_model}
+              onModelSelected={async () => {
+                // Refresh model list after selection or deletion
+                try {
+                  const modelsData = await invoke<ModelInfo[]>('list_whisperkit_models');
+                  setWhisperKitModels(modelsData);
+                } catch (err) {
+                  console.error('Failed to refresh WhisperKit models:', err);
+                }
+              }}
+              onDownloadStarted={(modelName) => {
+                // Optimistic UI update: show downloading state immediately
+                setWhisperKitModels((prev) =>
+                  prev.map((m) =>
+                    m.filename === modelName
+                      ? { ...m, status: { type: 'downloading', progress: 0 } }
+                      : m
+                  )
+                );
+              }}
+              downloadCommand="download_whisperkit_model"
+              cancelCommand={undefined}
+              deleteCommand={undefined}
+              settingsField="whisperkit_model"
+            />
+          ) : (
+            <ModelList
+              models={models}
+              selectedModel={settings.transcription.whisper_model}
+              onModelSelected={async () => {
+                // Refresh model list after selection or deletion
+                try {
+                  const modelsData = await invoke<ModelInfo[]>('list_models');
+                  setModels(modelsData);
+                } catch (err) {
+                  console.error('Failed to refresh models:', err);
+                }
+              }}
+              onDownloadStarted={(modelName) => {
+                // Optimistic UI update: show downloading state immediately
+                setModels((prev) =>
+                  prev.map((m) =>
+                    m.filename === modelName
+                      ? { ...m, status: { type: 'downloading', progress: 0 } }
+                      : m
+                  )
+                );
+              }}
+              downloadCommand="download_model"
+              cancelCommand="cancel_download"
+              deleteCommand="delete_model"
+              settingsField="whisper_model"
+            />
+          )}
         </section>
       </div>
     </div>

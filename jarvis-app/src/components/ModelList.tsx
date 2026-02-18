@@ -5,8 +5,12 @@ import type { ModelInfo, Settings } from '../state/types';
 interface ModelListProps {
   models: ModelInfo[];
   selectedModel: string;
-  onModelSelected: () => void;
+  onModelSelected: (modelName: string) => void;
   onDownloadStarted?: (modelName: string) => void;
+  downloadCommand?: string;
+  cancelCommand?: string;
+  deleteCommand?: string;
+  settingsField?: 'whisper_model' | 'whisperkit_model';
 }
 
 const TIER_LABELS: Record<string, { label: string; color: string }> = {
@@ -16,7 +20,16 @@ const TIER_LABELS: Record<string, { label: string; color: string }> = {
   best: { label: 'Best', color: '#FF9800' },
 };
 
-export function ModelList({ models, selectedModel, onModelSelected, onDownloadStarted }: ModelListProps) {
+export function ModelList({ 
+  models, 
+  selectedModel, 
+  onModelSelected, 
+  onDownloadStarted,
+  downloadCommand = 'download_model',
+  cancelCommand = 'cancel_download',
+  deleteCommand = 'delete_model',
+  settingsField = 'whisper_model',
+}: ModelListProps) {
   const [deletingModel, setDeletingModel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -30,7 +43,7 @@ export function ModelList({ models, selectedModel, onModelSelected, onDownloadSt
   const handleDownload = async (modelName: string) => {
     try {
       setError(null);
-      await invoke('download_model', { modelName });
+      await invoke(downloadCommand, { modelName });
       onDownloadStarted?.(modelName);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -38,20 +51,22 @@ export function ModelList({ models, selectedModel, onModelSelected, onDownloadSt
   };
 
   const handleCancel = async (modelName: string) => {
+    if (!cancelCommand) return;
     try {
       setError(null);
-      await invoke('cancel_download', { modelName });
+      await invoke(cancelCommand, { modelName });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
 
   const handleDelete = async (modelName: string) => {
+    if (!deleteCommand) return;
     try {
       setError(null);
-      await invoke('delete_model', { modelName });
+      await invoke(deleteCommand, { modelName });
       setDeletingModel(null);
-      onModelSelected();
+      onModelSelected(modelName);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setDeletingModel(null);
@@ -67,11 +82,11 @@ export function ModelList({ models, selectedModel, onModelSelected, onDownloadSt
         ...settings,
         transcription: {
           ...settings.transcription,
-          whisper_model: modelName,
+          [settingsField]: modelName,
         },
       };
       await invoke('update_settings', { settings: updatedSettings });
-      onModelSelected();
+      onModelSelected(modelName);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -147,12 +162,14 @@ export function ModelList({ models, selectedModel, onModelSelected, onDownloadSt
                       {model.status.progress.toFixed(0)}%
                     </span>
                   </div>
-                  <button
-                    onClick={() => handleCancel(model.filename)}
-                    className="cancel-button"
-                  >
-                    Cancel
-                  </button>
+                  {cancelCommand && (
+                    <button
+                      onClick={() => handleCancel(model.filename)}
+                      className="cancel-button"
+                    >
+                      Cancel
+                    </button>
+                  )}
                 </>
               )}
 
@@ -165,12 +182,14 @@ export function ModelList({ models, selectedModel, onModelSelected, onDownloadSt
                   >
                     {isSelected ? 'Selected' : 'Select'}
                   </button>
-                  <button
-                    onClick={() => confirmDelete(model.filename)}
-                    className="delete-button"
-                  >
-                    Delete
-                  </button>
+                  {deleteCommand && (
+                    <button
+                      onClick={() => confirmDelete(model.filename)}
+                      className="delete-button"
+                    >
+                      Delete
+                    </button>
+                  )}
                 </>
               )}
 

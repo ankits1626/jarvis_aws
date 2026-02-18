@@ -1,0 +1,5 @@
+{
+  "version": "1.0",
+  "name": "jarvis-whisperkit",
+  "description": "WhisperKit (Apple-native ASR) integration as toggleable transcription engine"
+}

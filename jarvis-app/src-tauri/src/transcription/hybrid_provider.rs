@@ -281,10 +281,8 @@ mod tests {
     fn test_settings() -> TranscriptionSettings {
         TranscriptionSettings {
             vad_enabled: false,
-            vad_threshold: 0.3,
             vosk_enabled: false,
-            whisper_enabled: true,
-            whisper_model: "ggml-base.en.bin".to_string(),
+            ..Default::default()
         }
     }
 

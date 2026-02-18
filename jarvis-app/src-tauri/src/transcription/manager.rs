@@ -25,17 +25,20 @@ pub struct TranscriptionManager {
     status: Arc<TokioMutex<TranscriptionStatus>>,
     stop_tx: Option<watch::Sender<bool>>,
     app_handle: AppHandle,
+    window_duration: f32,
 }
 
 impl TranscriptionManager {
     /// Create a new TranscriptionManager
-    /// 
+    ///
     /// # Arguments
     /// * `provider` - The transcription provider (HybridProvider, etc.)
     /// * `app_handle` - Tauri app handle for emitting events
+    /// * `window_duration` - Audio window size in seconds for batch transcription
     pub fn new(
         provider: Box<dyn TranscriptionProvider>,
         app_handle: AppHandle,
+        window_duration: f32,
     ) -> Self {
         Self {
             provider: Arc::new(TokioMutex::new(provider)),
@@ -43,9 +46,15 @@ impl TranscriptionManager {
             status: Arc::new(TokioMutex::new(TranscriptionStatus::Idle)),
             stop_tx: None,
             app_handle,
+            window_duration,
         }
     }
     
+    /// Update the window duration (takes effect on next start())
+    pub fn set_window_duration(&mut self, duration: f32) {
+        self.window_duration = duration;
+    }
+
     /// Start transcription
     /// 
     /// Spawns a background task that:
@@ -81,9 +90,13 @@ impl TranscriptionManager {
         let status = self.status.clone();
         let app_handle = self.app_handle.clone();
         
+        // Read latest window_duration (may have been updated via settings since construction)
+        let window_duration = self.window_duration;
+        eprintln!("TranscriptionManager: Using window_duration={:.1}s", window_duration);
+
         // Spawn background transcription task
         tokio::spawn(async move {
-            let mut audio_buffer = AudioBuffer::new(5.0, 0.5, 16000);
+            let mut audio_buffer = AudioBuffer::new(window_duration, 0.5, 16000);
             let mut total_chunks = 0usize;
             let mut total_segments = 0usize;
             let mut total_windows = 0usize;

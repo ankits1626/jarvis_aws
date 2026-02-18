@@ -16,6 +16,47 @@ pub struct TranscriptionSettings {
     pub vosk_enabled: bool,
     pub whisper_enabled: bool,
     pub whisper_model: String,
+    #[serde(default = "default_engine")]
+    pub transcription_engine: String,
+    #[serde(default = "default_whisperkit_model")]
+    pub whisperkit_model: String,
+    #[serde(default = "default_window_duration")]
+    pub window_duration: f32,
+}
+
+fn default_engine() -> String {
+    "whisper-rs".to_string()
+}
+
+fn default_whisperkit_model() -> String {
+    "openai_whisper-large-v3_turbo".to_string()
+}
+
+fn default_window_duration() -> f32 {
+    3.0
+}
+
+impl Default for TranscriptionSettings {
+    fn default() -> Self {
+        Self {
+            vad_enabled: true,
+            vad_threshold: 0.3,
+            vosk_enabled: true,
+            whisper_enabled: true,
+            whisper_model: "ggml-base.en.bin".to_string(),
+            transcription_engine: default_engine(),
+            whisperkit_model: default_whisperkit_model(),
+            window_duration: default_window_duration(),
+        }
+    }
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            transcription: TranscriptionSettings::default(),
+        }
+    }
 }
 
 /// Manages settings persistence and provides thread-safe access
@@ -129,6 +170,7 @@ impl SettingsManager {
     /// Returns an error if:
     /// - vad_threshold is not in range [0.0, 1.0]
     /// - whisper_model is an empty string
+    /// - transcription_engine is not "whisper-rs" or "whisperkit"
     fn validate(settings: &Settings) -> Result<(), String> {
         // Validate VAD threshold range
         if settings.transcription.vad_threshold < 0.0 || settings.transcription.vad_threshold > 1.0 {
@@ -143,20 +185,29 @@ impl SettingsManager {
             return Err("Whisper model name cannot be empty".to_string());
         }
         
+        // Validate window_duration range (1-10 seconds)
+        if settings.transcription.window_duration < 1.0 || settings.transcription.window_duration > 10.0 {
+            return Err(format!(
+                "Window duration must be between 1.0 and 10.0 seconds, got {}",
+                settings.transcription.window_duration
+            ));
+        }
+
+        // Validate transcription_engine
+        let engine = settings.transcription.transcription_engine.as_str();
+        if engine != "whisper-rs" && engine != "whisperkit" {
+            return Err(format!(
+                "Transcription engine must be 'whisper-rs' or 'whisperkit', got '{}'",
+                engine
+            ));
+        }
+        
         Ok(())
     }
     
     /// Returns default settings
     fn default_settings() -> Settings {
-        Settings {
-            transcription: TranscriptionSettings {
-                vad_enabled: true,
-                vad_threshold: 0.3,
-                vosk_enabled: true,
-                whisper_enabled: true,
-                whisper_model: "ggml-base.en.bin".to_string(),
-            },
-        }
+        Settings::default()
     }
     
     /// Loads settings from disk

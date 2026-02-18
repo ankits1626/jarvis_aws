@@ -37,7 +37,8 @@
       "binaries/JarvisListen"
     ],
     "macOS": {
-      "infoPlist": "Info.plist"
+      "infoPlist": "Info.plist",
+      "frameworks": ["libs/libvosk.dylib"]
     }
   }
 }
