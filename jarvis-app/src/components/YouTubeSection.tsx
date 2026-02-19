@@ -1,11 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTauriEvent } from '../hooks/useTauriEvent';
 import type { YouTubeGist, YouTubeDetectedEvent } from '../state/types';
 
-interface DetectedVideo {
-  url: string;
-  video_id: string;
+interface DetectedVideo extends YouTubeDetectedEvent {
   gist?: YouTubeGist;
   loading?: boolean;
   error?: string;
@@ -31,7 +29,10 @@ function VideoCard({ video, onPrepareGist, onDismiss, onCopy }: VideoCardProps) 
 
   return (
     <div className="video-card">
-      <div className="video-url">{video.url}</div>
+      <div className="video-url">{video.title || video.url}</div>
+      {video.author_name && (
+        <div className="video-author">by {video.author_name}</div>
+      )}
       
       {!video.gist && !video.loading && !video.error && (
         <button onClick={onPrepareGist} className="prepare-gist-button">
@@ -74,19 +75,7 @@ function VideoCard({ video, onPrepareGist, onDismiss, onCopy }: VideoCardProps) 
 }
 
 export function YouTubeSection({ onClose }: YouTubeSectionProps) {
-  const [isRunning, setIsRunning] = useState(false);
   const [videos, setVideos] = useState<DetectedVideo[]>([]);
-
-  // Load observer status on mount
-  useEffect(() => {
-    console.log('[YouTubeSection] Loading observer status...');
-    invoke<boolean>('get_observer_status')
-      .then((status) => {
-        console.log('[YouTubeSection] Observer status:', status);
-        setIsRunning(status);
-      })
-      .catch(err => console.error('[YouTubeSection] Failed to get observer status:', err));
-  }, []);
 
   // Listen for youtube-video-detected events
   useTauriEvent<YouTubeDetectedEvent>(
@@ -96,27 +85,11 @@ export function YouTubeSection({ onClose }: YouTubeSectionProps) {
       setVideos(prev => [{
         url: payload.url,
         video_id: payload.video_id,
-      }, ...prev]);
+        title: payload.title,
+        author_name: payload.author_name,
+      }, ...prev]); // Add new videos at top (most recent first)
     }, [])
   );
-
-  const handleToggleObserver = async () => {
-    try {
-      if (isRunning) {
-        console.log('[YouTubeSection] Stopping observer...');
-        await invoke('stop_browser_observer');
-        console.log('[YouTubeSection] Observer stopped');
-        setIsRunning(false);
-      } else {
-        console.log('[YouTubeSection] Starting observer...');
-        await invoke('start_browser_observer');
-        console.log('[YouTubeSection] Observer started');
-        setIsRunning(true);
-      }
-    } catch (err) {
-      console.error('[YouTubeSection] Failed to toggle observer:', err);
-    }
-  };
 
   const handlePrepareGist = async (index: number) => {
     const video = videos[index];
@@ -169,12 +142,6 @@ ${gist.description}`;
         <button onClick={onClose} className="close-button">×</button>
       </div>
       <div className="settings-content">
-        <div className="observer-status">
-          <span>Observer: {isRunning ? 'Running' : 'Stopped'}</span>
-          <button onClick={handleToggleObserver}>
-            {isRunning ? 'Stop' : 'Start'}
-          </button>
-        </div>
         <div className="videos-list">
           {videos.length === 0 && (
             <p className="empty-state">No YouTube videos detected yet</p>

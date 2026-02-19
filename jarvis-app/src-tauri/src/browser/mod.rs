@@ -4,4 +4,4 @@ pub mod observer;
 pub mod youtube;
 
 pub use observer::BrowserObserver;
-pub use youtube::{scrape_youtube_gist, YouTubeGist};
+pub use youtube::{fetch_oembed_metadata, scrape_youtube_gist, QuickMetadata, YouTubeGist};

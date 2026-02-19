@@ -993,6 +993,107 @@ pub async fn get_observer_status(
     Ok(observer.lock().await.is_running())
 }
 
+/// Get browser settings
+/// 
+/// This command returns the current browser observer settings including
+/// whether the observer is enabled.
+/// 
+/// # Arguments
+/// 
+/// * `settings_manager` - Managed state containing the SettingsManager
+/// 
+/// # Returns
+/// 
+/// * `Ok(BrowserSettings)` - Current browser settings
+/// * `Err(String)` - Error message if settings cannot be read
+/// 
+/// # Examples
+/// 
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+/// 
+/// interface BrowserSettings {
+///   observer_enabled: boolean;
+/// }
+/// 
+/// try {
+///   const settings: BrowserSettings = await invoke('get_browser_settings');
+///   console.log(`Observer enabled: ${settings.observer_enabled}`);
+/// } catch (error) {
+///   console.error(`Failed to get browser settings: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub fn get_browser_settings(
+    settings_manager: State<'_, Arc<RwLock<SettingsManager>>>,
+) -> Result<crate::settings::BrowserSettings, String> {
+    let manager = settings_manager.read()
+        .map_err(|e| format!("Failed to acquire settings read lock: {}", e))?;
+    Ok(manager.get().browser)
+}
+
+/// Update browser settings
+/// 
+/// This command updates the browser observer settings and starts/stops
+/// the observer based on the new enabled state.
+/// 
+/// # Arguments
+/// 
+/// * `settings_manager` - Managed state containing the SettingsManager
+/// * `browser_observer` - Managed state containing the BrowserObserver
+/// * `observer_enabled` - Whether the observer should be enabled
+/// 
+/// # Returns
+/// 
+/// * `Ok(())` - Settings updated successfully
+/// * `Err(String)` - Error message if update fails
+/// 
+/// # Examples
+/// 
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+/// 
+/// try {
+///   await invoke('update_browser_settings', { observerEnabled: true });
+///   console.log('Browser settings updated');
+/// } catch (error) {
+///   console.error(`Failed to update browser settings: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn update_browser_settings(
+    settings_manager: State<'_, Arc<RwLock<SettingsManager>>>,
+    browser_observer: State<'_, Arc<tokio::sync::Mutex<crate::browser::BrowserObserver>>>,
+    observer_enabled: bool,
+) -> Result<(), String> {
+    // Get current settings
+    let mut settings = {
+        let manager = settings_manager.read()
+            .map_err(|e| format!("Failed to acquire settings read lock: {}", e))?;
+        manager.get()
+    };
+    
+    // Update browser settings
+    settings.browser.observer_enabled = observer_enabled;
+    
+    // Persist settings
+    {
+        let manager = settings_manager.read()
+            .map_err(|e| format!("Failed to acquire settings read lock: {}", e))?;
+        manager.update(settings)?;
+    }
+    
+    // Apply observer state change
+    let mut observer = browser_observer.lock().await;
+    if observer_enabled && !observer.is_running() {
+        observer.start().await?;
+    } else if !observer_enabled && observer.is_running() {
+        observer.stop().await?;
+    }
+    
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

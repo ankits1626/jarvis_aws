@@ -309,4 +309,10 @@ export interface YouTubeDetectedEvent {
   
   /** 11-character video ID */
   video_id: string;
+  
+  /** Video title (from oEmbed API, optional) */
+  title?: string;
+  
+  /** Channel/author name (from oEmbed API, optional) */
+  author_name?: string;
 }

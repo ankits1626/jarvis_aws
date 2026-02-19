@@ -6,6 +6,8 @@ use std::sync::{Arc, RwLock};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     pub transcription: TranscriptionSettings,
+    #[serde(default)]
+    pub browser: BrowserSettings,
 }
 
 /// Transcription-specific settings
@@ -22,6 +24,12 @@ pub struct TranscriptionSettings {
     pub whisperkit_model: String,
     #[serde(default = "default_window_duration")]
     pub window_duration: f32,
+}
+
+/// Browser observer settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserSettings {
+    pub observer_enabled: bool,
 }
 
 fn default_engine() -> String {
@@ -51,10 +59,19 @@ impl Default for TranscriptionSettings {
     }
 }
 
+impl Default for BrowserSettings {
+    fn default() -> Self {
+        Self {
+            observer_enabled: true,
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
             transcription: TranscriptionSettings::default(),
+            browser: BrowserSettings::default(),
         }
     }
 }

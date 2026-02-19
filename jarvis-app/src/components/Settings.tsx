@@ -12,12 +12,17 @@ import type {
   WhisperKitStatus,
 } from '../state/types';
 
+interface BrowserSettings {
+  observer_enabled: boolean;
+}
+
 interface SettingsProps {
   onClose: () => void;
 }
 
 export function Settings({ onClose }: SettingsProps) {
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [browserSettings, setBrowserSettings] = useState<BrowserSettings | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [whisperKitModels, setWhisperKitModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,13 +34,15 @@ export function Settings({ onClose }: SettingsProps) {
     const loadData = async () => {
       try {
         setLoading(true);
-        const [settingsData, modelsData, whisperKitModelsData, whisperKitStatusData] = await Promise.all([
+        const [settingsData, browserSettingsData, modelsData, whisperKitModelsData, whisperKitStatusData] = await Promise.all([
           invoke<Settings>('get_settings'),
+          invoke<BrowserSettings>('get_browser_settings'),
           invoke<ModelInfo[]>('list_models'),
           invoke<ModelInfo[]>('list_whisperkit_models'),
           invoke<WhisperKitStatus>('check_whisperkit_status'),
         ]);
         setSettings(settingsData);
+        setBrowserSettings(browserSettingsData);
         setModels(modelsData);
         setWhisperKitModels(whisperKitModelsData);
         setWhisperKitStatus(whisperKitStatusData);
@@ -242,6 +249,16 @@ export function Settings({ onClose }: SettingsProps) {
     }
   };
 
+  const handleBrowserObserverChange = async (enabled: boolean) => {
+    try {
+      await invoke('update_browser_settings', { observerEnabled: enabled });
+      setBrowserSettings({ observer_enabled: enabled });
+    } catch (err) {
+      console.error('Failed to update browser settings:', err);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   return (
     <div className="settings-panel">
       <div className="settings-header">
@@ -287,6 +304,24 @@ export function Settings({ onClose }: SettingsProps) {
             </div>
           )}
           <p className="engine-note">Engine changes take effect after app restart.</p>
+        </section>
+
+        <section className="settings-section">
+          <h3>Browser</h3>
+          <div className="setting-row">
+            <label htmlFor="browser-observer">
+              <input
+                type="checkbox"
+                id="browser-observer"
+                checked={browserSettings?.observer_enabled ?? true}
+                onChange={(e) => handleBrowserObserverChange(e.target.checked)}
+              />
+              Automatically detect YouTube videos in Chrome
+            </label>
+            <p className="setting-info">
+              When enabled, JarvisApp will monitor Chrome and offer to prepare gists for YouTube videos you watch
+            </p>
+          </div>
         </section>
 
         <section className="settings-section">

@@ -50,6 +50,7 @@ mod property_tests {
                     whisper_model: whisper_model.clone(),
                     ..Default::default()
                 },
+                browser: crate::settings::BrowserSettings::default(),
             };
 
             // Verify the settings can be updated successfully
@@ -141,6 +142,7 @@ mod property_tests {
                 whisper_model: "test.bin".to_string(),
                 ..Default::default()
             },
+            browser: crate::settings::BrowserSettings::default(),
         };
 
         // Test that the manager update succeeds

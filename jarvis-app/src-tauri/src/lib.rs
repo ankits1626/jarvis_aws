@@ -141,9 +141,34 @@ pub fn run() {
             shortcut_manager.register_shortcuts()
                 .map_err(|e| format!("Failed to register shortcuts: {}", e))?;
             
+            // Request notification permission (required for macOS to show notifications)
+            {
+                use tauri_plugin_notification::NotificationExt;
+                match app.handle().notification().request_permission() {
+                    Ok(state) => eprintln!("Notification permission: {:?}", state),
+                    Err(e) => eprintln!("Warning: Failed to request notification permission: {}", e),
+                }
+            }
+
             // Initialize BrowserObserver and add to managed state (wrapped in Arc<tokio::sync::Mutex>)
             let browser_observer = browser::BrowserObserver::new(app.handle().clone());
-            app.manage(Arc::new(tokio::sync::Mutex::new(browser_observer)));
+            let browser_observer_arc = Arc::new(tokio::sync::Mutex::new(browser_observer));
+            app.manage(browser_observer_arc.clone());
+
+            // Auto-start browser observer if enabled in settings
+            if settings.browser.observer_enabled {
+                eprintln!("BrowserObserver: Auto-starting observer (enabled in settings)");
+                let observer_clone = browser_observer_arc.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut observer = observer_clone.lock().await;
+                    if let Err(e) = observer.start().await {
+                        eprintln!("Warning: Failed to auto-start browser observer: {}", e);
+                        eprintln!("Observer can be started manually from settings.");
+                    }
+                });
+            } else {
+                eprintln!("BrowserObserver: Auto-start disabled in settings");
+            }
             
             Ok(())
         })
@@ -170,6 +195,8 @@ pub fn run() {
             commands::stop_browser_observer,
             commands::fetch_youtube_gist,
             commands::get_observer_status,
+            commands::get_browser_settings,
+            commands::update_browser_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

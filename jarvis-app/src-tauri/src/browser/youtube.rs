@@ -15,6 +15,62 @@ pub struct YouTubeGist {
     pub duration_seconds: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuickMetadata {
+    pub title: String,
+    pub author_name: String,
+    pub thumbnail_url: String,
+}
+
+/// Fetch quick metadata from YouTube oEmbed API
+/// 
+/// Makes a lightweight API call to get title, author, and thumbnail.
+/// Returns QuickMetadata or an error message.
+/// Timeout: 3 seconds
+pub async fn fetch_oembed_metadata(video_url: &str) -> Result<QuickMetadata, String> {
+    // Create HTTP client with 3-second timeout
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    
+    // Build oEmbed API request
+    let response = client
+        .get("https://www.youtube.com/oembed")
+        .query(&[("url", video_url), ("format", "json")])
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch oEmbed metadata: {}", e))?;
+    
+    // Parse JSON response
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse oEmbed JSON: {}", e))?;
+    
+    // Extract fields with fallbacks
+    let title = json["title"]
+        .as_str()
+        .unwrap_or("Unknown")
+        .to_string();
+    
+    let author_name = json["author_name"]
+        .as_str()
+        .unwrap_or("Unknown")
+        .to_string();
+    
+    let thumbnail_url = json["thumbnail_url"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    
+    Ok(QuickMetadata {
+        title,
+        author_name,
+        thumbnail_url,
+    })
+}
+
 /// Scrape YouTube video metadata from a video URL
 /// 
 /// Fetches the YouTube page HTML and extracts metadata fields.

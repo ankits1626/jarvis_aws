@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { onAction } from "@tauri-apps/plugin-notification";
 import { useRecording } from "./hooks/useRecording";
 import { useTauriEvent } from "./hooks/useTauriEvent";
 import { DeleteConfirmDialog } from "./components/DeleteConfirmDialog";
@@ -78,6 +79,25 @@ function App() {
       }
     }, [showYouTube])
   );
+
+  // Listen for notification clicks to open YouTube section
+  useEffect(() => {
+    let cleanup: any;
+    
+    onAction(() => {
+      console.log('[App] Notification clicked, opening YouTube section');
+      setShowYouTube(true);
+      setYoutubeNotification(false);
+    }).then(unlisten => {
+      cleanup = unlisten;
+    });
+    
+    return () => {
+      if (cleanup && typeof cleanup === 'function') {
+        cleanup();
+      }
+    };
+  }, []);
 
   // Cleanup audio URL when component unmounts or selection changes
   useEffect(() => {

@@ -19,6 +19,10 @@ pub struct BrowserObserver {
 pub struct YouTubeDetectedEvent {
     pub url: String,
     pub video_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author_name: Option<String>,
 }
 
 impl BrowserObserver {
@@ -56,6 +60,7 @@ impl BrowserObserver {
         // Spawn background polling task
         tokio::spawn(async move {
             let mut last_url = String::new();
+            let mut seen_video_ids = std::collections::HashSet::new();
 
             loop {
                 tokio::select! {
@@ -76,7 +81,19 @@ impl BrowserObserver {
                             Ok(url) if url != last_url => {
                                 eprintln!("BrowserObserver: URL changed to: {}", url);
                                 last_url = url.clone();
-                                classify_url(&url, &app_handle).await;
+                                
+                                // Check for YouTube videos and deduplicate by video ID
+                                if let Some((video_id, full_url)) = detect_youtube(&url) {
+                                    if seen_video_ids.contains(&video_id) {
+                                        eprintln!("BrowserObserver: Video {} already seen, skipping", video_id);
+                                    } else {
+                                        eprintln!("BrowserObserver: New video detected - ID: {}, URL: {}", video_id, full_url);
+                                        seen_video_ids.insert(video_id.clone());
+                                        // Pass video_id and full_url to avoid redundant regex
+                                        handle_youtube_video(&video_id, &full_url, &app_handle).await;
+                                    }
+                                }
+                                // Note: Non-YouTube URLs are ignored (no classify_url call)
                             }
                             Ok(url) => {
                                 eprintln!("BrowserObserver: URL unchanged: {}", url);
@@ -140,40 +157,75 @@ async fn poll_chrome_url() -> Result<String, String> {
     Ok(url)
 }
 
-/// Classify a URL and trigger appropriate actions
+/// Handle YouTube video detection
 /// 
-/// Currently checks for YouTube videos. Will be extended in future tasks
-/// to detect other content types.
-async fn classify_url(url: &str, app_handle: &AppHandle) {
-    eprintln!("BrowserObserver: Classifying URL: {}", url);
+/// Fetches oEmbed metadata, emits event, and sends notification.
+/// Takes pre-extracted video_id and full_url to avoid redundant regex.
+async fn handle_youtube_video(video_id: &str, full_url: &str, app_handle: &AppHandle) {
+    eprintln!("BrowserObserver: Handling YouTube video - ID: {}, URL: {}", video_id, full_url);
     
-    // Check for YouTube videos
-    if let Some((video_id, full_url)) = detect_youtube(url) {
-        eprintln!("BrowserObserver: YouTube video detected - ID: {}, URL: {}", video_id, full_url);
-        
-        // Emit youtube-video-detected event
-        let event = YouTubeDetectedEvent {
-            url: full_url.clone(),
-            video_id: video_id.clone(),
-        };
-        
-        match app_handle.emit("youtube-video-detected", &event) {
-            Ok(()) => eprintln!("BrowserObserver: Event emitted successfully"),
-            Err(e) => eprintln!("BrowserObserver: WARNING - Failed to emit event: {}", e),
+    // Fetch oEmbed metadata with 3-second timeout
+    let (title, author_name) = match crate::browser::fetch_oembed_metadata(full_url).await {
+        Ok(metadata) => {
+            eprintln!("BrowserObserver: oEmbed metadata fetched - Title: {}, Author: {}", 
+                metadata.title, metadata.author_name);
+            (Some(metadata.title), Some(metadata.author_name))
         }
-
-        // Send native macOS notification
-        match app_handle
-            .notification()
-            .builder()
-            .title("YouTube Video Detected")
-            .body("Open JarvisApp to prepare a gist")
-            .show()
-        {
-            Ok(()) => eprintln!("BrowserObserver: Notification sent successfully"),
-            Err(e) => eprintln!("BrowserObserver: WARNING - Failed to send notification: {}", e),
+        Err(e) => {
+            eprintln!("BrowserObserver: Failed to fetch oEmbed metadata: {}", e);
+            (None, None)
         }
+    };
+    
+    // Emit single youtube-video-detected event with metadata
+    let event = YouTubeDetectedEvent {
+        url: full_url.to_string(),
+        video_id: video_id.to_string(),
+        title: title.clone(),
+        author_name: author_name.clone(),
+    };
+    
+    match app_handle.emit("youtube-video-detected", &event) {
+        Ok(()) => eprintln!("BrowserObserver: Event emitted successfully"),
+        Err(e) => eprintln!("BrowserObserver: WARNING - Failed to emit event: {}", e),
     }
+
+    // Send smart notification based on oEmbed success
+    let notification_result = if let Some(ref video_title) = title {
+        // oEmbed succeeded - use title in notification
+        send_notification_with_title(app_handle, video_title).await
+    } else {
+        // oEmbed failed - use generic notification
+        send_notification_generic(app_handle).await
+    };
+    
+    match notification_result {
+        Ok(()) => eprintln!("BrowserObserver: Notification sent successfully"),
+        Err(e) => eprintln!("BrowserObserver: WARNING - Failed to send notification: {}", e),
+    }
+}
+
+/// Send notification with video title (when oEmbed succeeds)
+async fn send_notification_with_title(app_handle: &AppHandle, title: &str) -> Result<(), String> {
+    let body = format!("You're watching: {}. Want me to keep a gist?", title);
+    app_handle
+        .notification()
+        .builder()
+        .title("YouTube Video Detected")
+        .body(&body)
+        .show()
+        .map_err(|e| format!("Failed to send notification: {}", e))
+}
+
+/// Send generic notification (when oEmbed fails)
+async fn send_notification_generic(app_handle: &AppHandle) -> Result<(), String> {
+    app_handle
+        .notification()
+        .builder()
+        .title("YouTube Video Detected")
+        .body("New YouTube video detected. Open JarvisApp to prepare a gist.")
+        .show()
+        .map_err(|e| format!("Failed to send notification: {}", e))
 }
 
 /// Detect YouTube video URLs and extract video ID
