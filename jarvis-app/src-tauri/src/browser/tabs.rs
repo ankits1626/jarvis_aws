@@ -11,6 +11,7 @@ pub enum SourceType {
     Article,
     Code,
     Docs,
+    Email,
     QA,
     News,
     Research,
@@ -61,6 +62,11 @@ pub fn classify_url(url: &str) -> SourceType {
     // YouTube
     if domain.contains("youtube.com") || domain.contains("youtu.be") {
         return SourceType::YouTube;
+    }
+
+    // Email
+    if domain.contains("mail.google.com") {
+        return SourceType::Email;
     }
 
     // Code hosting
@@ -281,6 +287,14 @@ mod tests {
         assert_eq!(
             classify_url("https://x.com/user/status/123"),
             SourceType::Social
+        );
+    }
+
+    #[test]
+    fn test_classify_email() {
+        assert_eq!(
+            classify_url("https://mail.google.com/mail/u/0/#inbox/FMfcgzQXJWDRS"),
+            SourceType::Email
         );
     }
 

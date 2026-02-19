@@ -1713,6 +1713,11 @@ h1 {
   color: #db2777;
 }
 
+.source-badge.email {
+  background: #e8f0fe;
+  color: #1a73e8;
+}
+
 .source-badge.other {
   background: #f3f4f6;
   color: #6b7280;

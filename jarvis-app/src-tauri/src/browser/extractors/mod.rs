@@ -1,6 +1,7 @@
 // Extractor router — dispatches to the right extractor based on SourceType
 
 pub mod generic;
+pub mod gmail;
 pub mod medium;
 
 use super::tabs::SourceType;
@@ -29,6 +30,7 @@ pub async fn prepare_gist(url: &str, source_type: &SourceType) -> Result<PageGis
 
     match source_type {
         SourceType::YouTube => youtube_gist(url, &domain).await,
+        SourceType::Email => gmail::extract(url, source_type, &domain).await,
         _ if domain.contains("medium.com") => medium::extract(url, source_type, &domain).await,
         _ => generic::extract(url, source_type, &domain).await,
     }
