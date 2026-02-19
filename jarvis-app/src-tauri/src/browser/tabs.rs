@@ -12,6 +12,7 @@ pub enum SourceType {
     Code,
     Docs,
     Email,
+    Chat,
     QA,
     News,
     Research,
@@ -67,6 +68,11 @@ pub fn classify_url(url: &str) -> SourceType {
     // Email
     if domain.contains("mail.google.com") {
         return SourceType::Email;
+    }
+
+    // Chat (AI conversations)
+    if domain.contains("chatgpt.com") || domain.contains("chat.openai.com") {
+        return SourceType::Chat;
     }
 
     // Code hosting
@@ -287,6 +293,18 @@ mod tests {
         assert_eq!(
             classify_url("https://x.com/user/status/123"),
             SourceType::Social
+        );
+    }
+
+    #[test]
+    fn test_classify_chat() {
+        assert_eq!(
+            classify_url("https://chatgpt.com/c/abc123"),
+            SourceType::Chat
+        );
+        assert_eq!(
+            classify_url("https://chat.openai.com/c/abc123"),
+            SourceType::Chat
         );
     }
 

@@ -309,7 +309,7 @@ export interface YouTubeGist {
  */
 
 /** Source type classification matching Rust SourceType enum */
-export type SourceType = 'YouTube' | 'Article' | 'Code' | 'Docs' | 'Email' | 'QA' | 'News' | 'Research' | 'Social' | 'Other';
+export type SourceType = 'YouTube' | 'Article' | 'Code' | 'Docs' | 'Email' | 'Chat' | 'QA' | 'News' | 'Research' | 'Social' | 'Other';
 
 /** Browser tab info matching Rust BrowserTab struct */
 export interface BrowserTab {

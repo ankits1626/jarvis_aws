@@ -1718,6 +1718,11 @@ h1 {
   color: #1a73e8;
 }
 
+.source-badge.chat {
+  background: #d1fae5;
+  color: #059669;
+}
+
 .source-badge.other {
   background: #f3f4f6;
   color: #6b7280;

@@ -12,6 +12,7 @@ const SOURCE_BADGES: Record<SourceType, { label: string; className: string }> = 
   Code: { label: 'Code', className: 'source-badge code' },
   Docs: { label: 'Docs', className: 'source-badge docs' },
   Email: { label: 'Email', className: 'source-badge email' },
+  Chat: { label: 'Chat', className: 'source-badge chat' },
   QA: { label: 'Q&A', className: 'source-badge qa' },
   News: { label: 'News', className: 'source-badge news' },
   Research: { label: 'Research', className: 'source-badge research' },
