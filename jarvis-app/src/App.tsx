@@ -7,6 +7,7 @@ import { DeleteConfirmDialog } from "./components/DeleteConfirmDialog";
 import { TranscriptDisplay } from "./components/TranscriptDisplay";
 import { Settings } from "./components/Settings";
 import { YouTubeSection } from "./components/YouTubeSection";
+import { BrowserTool } from "./components/BrowserTool";
 import type { YouTubeDetectedEvent } from "./state/types";
 import "./App.css";
 
@@ -43,6 +44,7 @@ function App() {
   const [showHamburgerMenu, setShowHamburgerMenu] = useState(false);
   const [youtubeNotification, setYoutubeNotification] = useState(false);
   const [showYouTube, setShowYouTube] = useState(false);
+  const [showBrowserTool, setShowBrowserTool] = useState(false);
 
   // Load recordings on mount (Requirement 1.2)
   useEffect(() => {
@@ -257,6 +259,12 @@ function App() {
               >
                 📹 YouTube
               </button>
+              <button
+                className="hamburger-menu-item"
+                onClick={() => { setShowBrowserTool(true); setShowHamburgerMenu(false); }}
+              >
+                🌐 Browser
+              </button>
             </div>
           )}
         </div>
@@ -441,6 +449,15 @@ function App() {
             if (e.target === e.currentTarget) setShowYouTube(false);
           }}>
             <YouTubeSection onClose={() => setShowYouTube(false)} />
+          </div>
+        )}
+
+        {/* Browser Tool */}
+        {showBrowserTool && (
+          <div className="dialog-overlay" onClick={(e) => {
+            if (e.target === e.currentTarget) setShowBrowserTool(false);
+          }}>
+            <BrowserTool onClose={() => setShowBrowserTool(false)} />
           </div>
         )}
       </div>

@@ -197,6 +197,9 @@ pub fn run() {
             commands::get_observer_status,
             commands::get_browser_settings,
             commands::update_browser_settings,
+            commands::list_browser_tabs,
+            commands::prepare_tab_gist,
+            commands::export_gist,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1094,6 +1094,62 @@ pub async fn update_browser_settings(
     Ok(())
 }
 
+/// List all open browser tabs with classification
+///
+/// This command uses the active browser adapter (currently Chrome via AppleScript)
+/// to enumerate all open tabs and classify them by source type.
+#[tauri::command]
+pub async fn list_browser_tabs() -> Result<Vec<crate::browser::tabs::BrowserTab>, String> {
+    crate::browser::tabs::list_all_tabs().await
+}
+
+/// Prepare a gist for a browser tab URL
+///
+/// This command fetches metadata from the URL using the appropriate extractor
+/// based on the source type (YouTube extractor for YouTube, generic for everything else).
+#[tauri::command]
+pub async fn prepare_tab_gist(
+    url: String,
+    source_type: String,
+) -> Result<crate::browser::extractors::PageGist, String> {
+    let st: crate::browser::tabs::SourceType =
+        serde_json::from_str(&format!("\"{}\"", source_type))
+            .unwrap_or(crate::browser::tabs::SourceType::Other);
+    crate::browser::extractors::prepare_gist(&url, &st).await
+}
+
+/// Export a gist to a text file in ~/.jarvis/gists/
+///
+/// Returns the full path to the saved file.
+#[tauri::command]
+pub async fn export_gist(title: String, content: String) -> Result<String, String> {
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let gists_dir = home.join(".jarvis").join("gists");
+    std::fs::create_dir_all(&gists_dir)
+        .map_err(|e| format!("Failed to create gists directory: {}", e))?;
+
+    // Sanitize title for filename: keep alphanumeric, spaces → dashes, limit length
+    let safe_name: String = title
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .collect();
+    let safe_name = safe_name.trim_matches('-');
+    let safe_name = if safe_name.len() > 80 {
+        &safe_name[..80]
+    } else {
+        safe_name
+    };
+
+    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let filename = format!("{}-{}.md", timestamp, safe_name);
+    let file_path = gists_dir.join(&filename);
+
+    std::fs::write(&file_path, &content)
+        .map_err(|e| format!("Failed to write gist file: {}", e))?;
+
+    Ok(file_path.to_string_lossy().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

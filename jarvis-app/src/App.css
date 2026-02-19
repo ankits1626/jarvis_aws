@@ -1561,3 +1561,169 @@ h1 {
     width: 100%;
   }
 }
+
+/* Browser Tool Styles */
+.browser-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  margin-bottom: 15px;
+}
+
+.refresh-button {
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.refresh-button:hover:not(:disabled) {
+  background: #5568d3;
+  transform: translateY(-1px);
+}
+
+.refresh-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.tab-count {
+  font-size: 14px;
+  color: #666;
+  font-weight: 500;
+}
+
+.tab-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 400px;
+  overflow-y: auto;
+  padding-right: 5px;
+}
+
+.tab-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.tab-list::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 10px;
+}
+
+.tab-list::-webkit-scrollbar-thumb {
+  background: #667eea;
+  border-radius: 10px;
+}
+
+.tab-item {
+  padding: 12px 15px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.tab-item:hover {
+  background: #e9ecef;
+}
+
+.tab-item.selected {
+  background: #e7f3ff;
+  border-color: #667eea;
+}
+
+.tab-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.tab-domain {
+  font-size: 12px;
+  color: #888;
+  font-family: 'Courier New', monospace;
+}
+
+.tab-title {
+  font-size: 14px;
+  color: #333;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Source type badges */
+.source-badge {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.source-badge.youtube {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.source-badge.article {
+  background: #dbeafe;
+  color: #2563eb;
+}
+
+.source-badge.code {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+.source-badge.docs {
+  background: #f3e8ff;
+  color: #9333ea;
+}
+
+.source-badge.qa {
+  background: #ffedd5;
+  color: #ea580c;
+}
+
+.source-badge.news {
+  background: #ccfbf1;
+  color: #0d9488;
+}
+
+.source-badge.research {
+  background: #e0e7ff;
+  color: #4f46e5;
+}
+
+.source-badge.social {
+  background: #fce7f3;
+  color: #db2777;
+}
+
+.source-badge.other {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.gist-action-bar {
+  margin-top: 15px;
+}
+
+.video-author {
+  font-size: 13px;
+  color: #666;
+  margin-bottom: 10px;
+}

@@ -1,6 +1,9 @@
 // Browser observation module for detecting and scraping YouTube videos
 
+pub mod adapters;
+pub mod extractors;
 pub mod observer;
+pub mod tabs;
 pub mod youtube;
 
 pub use observer::BrowserObserver;

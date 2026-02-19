@@ -302,6 +302,37 @@ export interface YouTubeGist {
   duration_seconds: number;
 }
 
+/**
+ * Browser Tool types
+ *
+ * These types define the structure for the Browser Tool tab listing and gist extraction
+ */
+
+/** Source type classification matching Rust SourceType enum */
+export type SourceType = 'YouTube' | 'Article' | 'Code' | 'Docs' | 'QA' | 'News' | 'Research' | 'Social' | 'Other';
+
+/** Browser tab info matching Rust BrowserTab struct */
+export interface BrowserTab {
+  url: string;
+  title: string;
+  source_type: SourceType;
+  domain: string;
+}
+
+/** Page gist (extracted metadata) matching Rust PageGist struct */
+export interface PageGist {
+  url: string;
+  title: string;
+  source_type: SourceType;
+  domain: string;
+  author: string | null;
+  description: string | null;
+  content_excerpt: string | null;
+  published_date: string | null;
+  image_url: string | null;
+  extra: Record<string, unknown>;
+}
+
 /** Payload for youtube-video-detected event */
 export interface YouTubeDetectedEvent {
   /** Full YouTube URL */
