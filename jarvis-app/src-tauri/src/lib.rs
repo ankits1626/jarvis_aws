@@ -1,4 +1,5 @@
 // Module declarations
+pub mod browser;
 pub mod commands;
 pub mod error;
 pub mod files;
@@ -23,6 +24,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Initialize FileManager and add to managed state
             let file_manager = FileManager::new()
@@ -139,6 +141,10 @@ pub fn run() {
             shortcut_manager.register_shortcuts()
                 .map_err(|e| format!("Failed to register shortcuts: {}", e))?;
             
+            // Initialize BrowserObserver and add to managed state (wrapped in Arc<tokio::sync::Mutex>)
+            let browser_observer = browser::BrowserObserver::new(app.handle().clone());
+            app.manage(Arc::new(tokio::sync::Mutex::new(browser_observer)));
+            
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -160,6 +166,10 @@ pub fn run() {
             commands::check_whisperkit_status,
             commands::list_whisperkit_models,
             commands::download_whisperkit_model,
+            commands::start_browser_observer,
+            commands::stop_browser_observer,
+            commands::fetch_youtube_gist,
+            commands::get_observer_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

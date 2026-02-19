@@ -274,3 +274,39 @@ export interface WhisperKitStatus {
   /** Reason why WhisperKit is unavailable (null if available) */
   reason?: string;
 }
+
+/**
+ * YouTube Browser Vision types
+ * 
+ * These types define the structure for YouTube video detection and metadata
+ */
+
+/** YouTube video metadata (gist) matching Rust YouTubeGist struct */
+export interface YouTubeGist {
+  /** Full YouTube URL */
+  url: string;
+  
+  /** 11-character video ID */
+  video_id: string;
+  
+  /** Video title */
+  title: string;
+  
+  /** Channel name */
+  channel: string;
+  
+  /** Video description */
+  description: string;
+  
+  /** Video duration in seconds */
+  duration_seconds: number;
+}
+
+/** Payload for youtube-video-detected event */
+export interface YouTubeDetectedEvent {
+  /** Full YouTube URL */
+  url: string;
+  
+  /** 11-character video ID */
+  video_id: string;
+}

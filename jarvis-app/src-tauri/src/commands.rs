@@ -854,6 +854,145 @@ pub async fn download_whisperkit_model(
     state.download_whisperkit_model(model_name).await
 }
 
+/// Start the browser observer
+/// 
+/// This command starts the browser observer which polls Chrome's active tab URL
+/// every 3 seconds and detects YouTube videos.
+/// 
+/// # Arguments
+/// 
+/// * `observer` - Managed state containing the BrowserObserver (wrapped in Arc<tokio::sync::Mutex>)
+/// 
+/// # Returns
+/// 
+/// * `Ok(())` - Observer started successfully
+/// * `Err(String)` - Error message if observer is already running or start fails
+/// 
+/// # Examples
+/// 
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+/// 
+/// try {
+///   await invoke('start_browser_observer');
+///   console.log('Browser observer started');
+/// } catch (error) {
+///   console.error(`Failed to start observer: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn start_browser_observer(
+    observer: State<'_, Arc<tokio::sync::Mutex<crate::browser::BrowserObserver>>>,
+) -> Result<(), String> {
+    observer.lock().await.start().await
+}
+
+/// Stop the browser observer
+/// 
+/// This command stops the browser observer and terminates the background polling task.
+/// 
+/// # Arguments
+/// 
+/// * `observer` - Managed state containing the BrowserObserver (wrapped in Arc<tokio::sync::Mutex>)
+/// 
+/// # Returns
+/// 
+/// * `Ok(())` - Observer stopped successfully
+/// * `Err(String)` - Error message if observer is not running or stop fails
+/// 
+/// # Examples
+/// 
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+/// 
+/// try {
+///   await invoke('stop_browser_observer');
+///   console.log('Browser observer stopped');
+/// } catch (error) {
+///   console.error(`Failed to stop observer: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn stop_browser_observer(
+    observer: State<'_, Arc<tokio::sync::Mutex<crate::browser::BrowserObserver>>>,
+) -> Result<(), String> {
+    observer.lock().await.stop().await
+}
+
+/// Fetch YouTube video metadata (gist)
+/// 
+/// This command scrapes a YouTube video page and extracts metadata including
+/// title, channel, description, and duration.
+/// 
+/// # Arguments
+/// 
+/// * `url` - YouTube video URL to scrape
+/// 
+/// # Returns
+/// 
+/// * `Ok(YouTubeGist)` - Video metadata
+/// * `Err(String)` - Error message if scraping fails
+/// 
+/// # Examples
+/// 
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+/// 
+/// interface YouTubeGist {
+///   url: string;
+///   video_id: string;
+///   title: string;
+///   channel: string;
+///   description: string;
+///   duration_seconds: number;
+/// }
+/// 
+/// try {
+///   const gist: YouTubeGist = await invoke('fetch_youtube_gist', {
+///     url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+///   });
+///   console.log(`Title: ${gist.title}`);
+/// } catch (error) {
+///   console.error(`Failed to fetch gist: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn fetch_youtube_gist(url: String) -> Result<crate::browser::YouTubeGist, String> {
+    crate::browser::scrape_youtube_gist(&url).await
+}
+
+/// Get browser observer status
+/// 
+/// This command returns whether the browser observer is currently running.
+/// 
+/// # Arguments
+/// 
+/// * `observer` - Managed state containing the BrowserObserver (wrapped in Arc<tokio::sync::Mutex>)
+/// 
+/// # Returns
+/// 
+/// * `Ok(bool)` - true if observer is running, false otherwise
+/// * `Err(String)` - Never returns an error (always succeeds)
+/// 
+/// # Examples
+/// 
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+/// 
+/// try {
+///   const isRunning: boolean = await invoke('get_observer_status');
+///   console.log(`Observer running: ${isRunning}`);
+/// } catch (error) {
+///   console.error(`Failed to get observer status: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn get_observer_status(
+    observer: State<'_, Arc<tokio::sync::Mutex<crate::browser::BrowserObserver>>>,
+) -> Result<bool, String> {
+    Ok(observer.lock().await.is_running())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

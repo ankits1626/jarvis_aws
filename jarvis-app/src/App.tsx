@@ -1,9 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useRecording } from "./hooks/useRecording";
+import { useTauriEvent } from "./hooks/useTauriEvent";
 import { DeleteConfirmDialog } from "./components/DeleteConfirmDialog";
 import { TranscriptDisplay } from "./components/TranscriptDisplay";
 import { Settings } from "./components/Settings";
+import { YouTubeSection } from "./components/YouTubeSection";
+import type { YouTubeDetectedEvent } from "./state/types";
 import "./App.css";
 
 /**
@@ -36,6 +39,9 @@ function App() {
   const [isLoadingRecordings, setIsLoadingRecordings] = useState(true);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showHamburgerMenu, setShowHamburgerMenu] = useState(false);
+  const [youtubeNotification, setYoutubeNotification] = useState(false);
+  const [showYouTube, setShowYouTube] = useState(false);
 
   // Load recordings on mount (Requirement 1.2)
   useEffect(() => {
@@ -46,6 +52,32 @@ function App() {
     };
     loadRecordings();
   }, [refreshRecordings]);
+
+  // Close hamburger menu when clicking outside
+  useEffect(() => {
+    if (!showHamburgerMenu) return;
+    
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (!target.closest('.hamburger-button') && !target.closest('.hamburger-menu')) {
+        setShowHamburgerMenu(false);
+      }
+    };
+    
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, [showHamburgerMenu]);
+
+  // Listen for youtube-video-detected events to show notification badge
+  useTauriEvent<YouTubeDetectedEvent>(
+    'youtube-video-detected',
+    useCallback(() => {
+      console.log('[App] youtube-video-detected event received, showYouTube:', showYouTube);
+      if (!showYouTube) {
+        setYoutubeNotification(true);
+      }
+    }, [showYouTube])
+  );
 
   // Cleanup audio URL when component unmounts or selection changes
   useEffect(() => {
@@ -144,6 +176,15 @@ function App() {
   };
 
   /**
+   * Handle opening YouTube section
+   */
+  const handleOpenYouTube = () => {
+    setShowYouTube(true);
+    setShowHamburgerMenu(false);
+    setYoutubeNotification(false);
+  };
+
+  /**
    * Format time in MM:SS format
    * Requirement 4.2: Display duration in MM:SS format
    */
@@ -169,13 +210,35 @@ function App() {
       <div className="container">
         <div className="header">
           <h1>JarvisApp</h1>
-          <button
-            className="settings-button"
-            onClick={() => setShowSettings(true)}
-            title="Settings"
-          >
-            ⚙️
-          </button>
+          <div className="header-buttons">
+            <button
+              className="hamburger-button"
+              onClick={() => setShowHamburgerMenu(!showHamburgerMenu)}
+              title="Menu"
+            >
+              ☰
+              {youtubeNotification && <span className="notification-badge" />}
+            </button>
+            <button
+              className="settings-button"
+              onClick={() => setShowSettings(true)}
+              title="Settings"
+            >
+              ⚙️
+            </button>
+          </div>
+          
+          {/* Hamburger dropdown menu */}
+          {showHamburgerMenu && (
+            <div className="hamburger-menu">
+              <button
+                className="hamburger-menu-item"
+                onClick={handleOpenYouTube}
+              >
+                📹 YouTube
+              </button>
+            </div>
+          )}
         </div>
         
         {/* Status Display */}
@@ -349,6 +412,15 @@ function App() {
         {showSettings && (
           <div className="dialog-overlay">
             <Settings onClose={() => setShowSettings(false)} />
+          </div>
+        )}
+
+        {/* YouTube Section */}
+        {showYouTube && (
+          <div className="dialog-overlay" onClick={(e) => {
+            if (e.target === e.currentTarget) setShowYouTube(false);
+          }}>
+            <YouTubeSection onClose={() => setShowYouTube(false)} />
           </div>
         )}
       </div>

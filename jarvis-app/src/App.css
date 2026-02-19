@@ -1192,3 +1192,372 @@ h1 {
     font-size: 12px;
   }
 }
+
+/* Hamburger Menu Styles */
+.header-buttons {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.hamburger-button {
+  background: transparent;
+  border: 2px solid #667eea;
+  color: #667eea;
+  font-size: 24px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  position: relative;
+}
+
+.hamburger-button:hover {
+  background: #667eea;
+  color: white;
+  transform: scale(1.05);
+}
+
+.hamburger-button:active {
+  transform: scale(0.95);
+}
+
+.notification-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 12px;
+  height: 12px;
+  background: #e74c3c;
+  border-radius: 50%;
+  border: 2px solid white;
+  animation: badgePulse 2s ease-in-out infinite;
+}
+
+@keyframes badgePulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 0.8;
+  }
+}
+
+.hamburger-menu {
+  position: absolute;
+  top: 60px;
+  right: 60px;
+  background: white;
+  border-radius: 10px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  min-width: 180px;
+  z-index: 100;
+  animation: slideDown 0.2s ease-out;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.hamburger-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 16px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  font-size: 15px;
+  color: #333;
+  cursor: pointer;
+  transition: background 0.2s;
+  border-radius: 10px;
+}
+
+.hamburger-menu-item:hover {
+  background: #f8f9fa;
+}
+
+.hamburger-menu-item:active {
+  background: #e9ecef;
+}
+
+/* YouTube Section Styles */
+.observer-status {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  margin-bottom: 20px;
+}
+
+.observer-status span {
+  font-size: 15px;
+  color: #333;
+  font-weight: 500;
+}
+
+.observer-status button {
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.observer-status button:hover {
+  background: #5568d3;
+  transform: translateY(-1px);
+}
+
+.observer-status button:active {
+  transform: translateY(0);
+}
+
+.videos-list {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  max-height: 500px;
+  overflow-y: auto;
+  padding-right: 5px;
+}
+
+.videos-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.videos-list::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 10px;
+}
+
+.videos-list::-webkit-scrollbar-thumb {
+  background: #667eea;
+  border-radius: 10px;
+}
+
+.videos-list::-webkit-scrollbar-thumb:hover {
+  background: #5568d3;
+}
+
+.video-card {
+  padding: 15px;
+  background: #f8f9fa;
+  border-radius: 10px;
+  border: 2px solid transparent;
+  transition: all 0.2s;
+}
+
+.video-card:hover {
+  border-color: #e9ecef;
+}
+
+.video-url {
+  font-size: 13px;
+  color: #667eea;
+  margin-bottom: 12px;
+  word-break: break-all;
+  font-family: 'Courier New', monospace;
+}
+
+.prepare-gist-button {
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  width: 100%;
+}
+
+.prepare-gist-button:hover {
+  background: #5568d3;
+  transform: translateY(-1px);
+}
+
+.prepare-gist-button:active {
+  transform: translateY(0);
+}
+
+.loading-state {
+  text-align: center;
+  padding: 20px;
+  color: #667eea;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.error-state {
+  padding: 12px;
+  background: #fee;
+  border: 1px solid #fcc;
+  border-radius: 6px;
+  color: #c00;
+  font-size: 13px;
+}
+
+.gist-display {
+  margin-top: 12px;
+}
+
+.gist-header {
+  font-size: 12px;
+  color: #999;
+  margin-bottom: 12px;
+  font-style: italic;
+}
+
+.gist-field {
+  margin-bottom: 10px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.gist-label {
+  font-weight: 600;
+  color: #333;
+}
+
+.gist-description {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e9ecef;
+}
+
+.gist-description-text {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #555;
+  line-height: 1.6;
+  max-height: 150px;
+  overflow-y: auto;
+  padding-right: 5px;
+}
+
+.gist-description-text::-webkit-scrollbar {
+  width: 6px;
+}
+
+.gist-description-text::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 10px;
+}
+
+.gist-description-text::-webkit-scrollbar-thumb {
+  background: #ccc;
+  border-radius: 10px;
+}
+
+.gist-description-text::-webkit-scrollbar-thumb:hover {
+  background: #999;
+}
+
+.gist-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.copy-button {
+  flex: 1;
+  background: #27ae60;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.copy-button:hover {
+  background: #229954;
+  transform: translateY(-1px);
+}
+
+.copy-button:active {
+  transform: translateY(0);
+}
+
+.gist-dismiss-button {
+  flex: 1;
+  background: #95a5a6;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.gist-dismiss-button:hover {
+  background: #7f8c8d;
+  transform: translateY(-1px);
+}
+
+.gist-dismiss-button:active {
+  transform: translateY(0);
+}
+
+.empty-state {
+  text-align: center;
+  color: #999;
+  font-style: italic;
+  padding: 40px 20px;
+  font-size: 14px;
+}
+
+@media (max-width: 768px) {
+  .hamburger-menu {
+    right: 20px;
+  }
+
+  .videos-list {
+    max-height: 400px;
+  }
+
+  .video-card {
+    padding: 12px;
+  }
+
+  .video-url {
+    font-size: 12px;
+  }
+
+  .gist-actions {
+    flex-direction: column;
+  }
+
+  .copy-button,
+  .gist-dismiss-button {
+    width: 100%;
+  }
+}
