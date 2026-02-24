@@ -347,3 +347,72 @@ export interface YouTubeDetectedEvent {
   /** Channel/author name (from oEmbed API, optional) */
   author_name?: string;
 }
+
+/**
+ * Gems types
+ * 
+ * These types define the structure for the persistent knowledge base (gems)
+ */
+
+/** Full gem representation matching Rust Gem struct */
+export interface Gem {
+  /** Unique identifier (UUID v4) */
+  id: string;
+  
+  /** Source classification (YouTube, Article, Email, Chat, etc.) */
+  source_type: string;
+  
+  /** Original URL (unique constraint) */
+  source_url: string;
+  
+  /** Domain extracted from URL (e.g., "youtube.com", "medium.com") */
+  domain: string;
+  
+  /** Page/video/article title */
+  title: string;
+  
+  /** Author/channel name (optional) */
+  author: string | null;
+  
+  /** Short description or summary (optional) */
+  description: string | null;
+  
+  /** Full extracted content (optional) */
+  content: string | null;
+  
+  /** Source-specific metadata (JSON, e.g., video duration, email thread ID) */
+  source_meta: Record<string, unknown>;
+  
+  /** ISO 8601 timestamp when gem was captured */
+  captured_at: string;
+}
+
+/** Lightweight gem for list/search results matching Rust GemPreview struct */
+export interface GemPreview {
+  /** Unique identifier (UUID v4) */
+  id: string;
+  
+  /** Source classification (YouTube, Article, Email, Chat, etc.) */
+  source_type: string;
+  
+  /** Original URL (unique constraint) */
+  source_url: string;
+  
+  /** Domain extracted from URL (e.g., "youtube.com", "medium.com") */
+  domain: string;
+  
+  /** Page/video/article title */
+  title: string;
+  
+  /** Author/channel name (optional) */
+  author: string | null;
+  
+  /** Short description or summary (optional) */
+  description: string | null;
+  
+  /** Content truncated to 200 characters */
+  content_preview: string | null;
+  
+  /** ISO 8601 timestamp when gem was captured */
+  captured_at: string;
+}

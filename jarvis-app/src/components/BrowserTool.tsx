@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { BrowserTab, PageGist, SourceType } from '../state/types';
+import type { BrowserTab, PageGist, SourceType, Gem } from '../state/types';
 
 interface BrowserToolProps {
   onClose: () => void;
@@ -20,12 +20,30 @@ const SOURCE_BADGES: Record<SourceType, { label: string; className: string }> = 
   Other: { label: 'Other', className: 'source-badge other' },
 };
 
-function GistCard({ gist, onCopy, onExport, onDismiss }: { gist: PageGist; onCopy: () => void; onExport: () => void; onDismiss: () => void }) {
+function GistCard({ gist, onCopy, onDismiss }: { gist: PageGist; onCopy: () => void; onDismiss: () => void }) {
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
   const durationSeconds = gist.extra?.duration_seconds as number | undefined;
   const formatDuration = (seconds: number): string => {
     const minutes = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${minutes}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setSaveError(null);
+    
+    try {
+      await invoke<Gem>('save_gem', { gist });
+      setSaved(true);
+    } catch (err) {
+      setSaveError(String(err));
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -61,9 +79,20 @@ function GistCard({ gist, onCopy, onExport, onDismiss }: { gist: PageGist; onCop
       )}
       <div className="gist-actions">
         <button onClick={onCopy} className="copy-button">Copy</button>
-        <button onClick={onExport} className="copy-button">Export</button>
+        <button 
+          onClick={handleSave} 
+          className="save-gem-button"
+          disabled={saved || saving}
+        >
+          {saved ? 'Saved' : saving ? 'Saving...' : 'Save Gem'}
+        </button>
         <button onClick={onDismiss} className="gist-dismiss-button">Dismiss</button>
       </div>
+      {saveError && (
+        <div className="error-state" style={{ marginTop: '8px' }}>
+          {saveError}
+        </div>
+      )}
     </div>
   );
 }
@@ -76,7 +105,6 @@ export function BrowserTool({ onClose }: BrowserToolProps) {
   const [gist, setGist] = useState<PageGist | null>(null);
   const [gistLoading, setGistLoading] = useState(false);
   const [gistError, setGistError] = useState<string | null>(null);
-  const [exportStatus, setExportStatus] = useState<string | null>(null);
 
   const fetchTabs = async () => {
     setLoading(true);
@@ -146,28 +174,9 @@ export function BrowserTool({ onClose }: BrowserToolProps) {
     }
   };
 
-  const handleExport = async () => {
-    console.log('[BrowserTool] Export clicked, gist:', !!gist);
-    if (!gist) return;
-    try {
-      const content = formatGist(gist);
-      console.log('[BrowserTool] Exporting, title:', gist.title, 'content length:', content.length);
-      const path = await invoke<string>('export_gist', {
-        title: gist.title,
-        content,
-      });
-      console.log('[BrowserTool] Gist exported to:', path);
-      setExportStatus(`Saved to: ${path}`);
-    } catch (err) {
-      console.error('[BrowserTool] Export failed:', err);
-      setExportStatus(`Export failed: ${err}`);
-    }
-  };
-
   const handleDismiss = () => {
     setGist(null);
     setGistError(null);
-    setExportStatus(null);
     setSelectedIndex(null);
   };
 
@@ -232,15 +241,8 @@ export function BrowserTool({ onClose }: BrowserToolProps) {
           <GistCard
             gist={gist}
             onCopy={handleCopy}
-            onExport={handleExport}
             onDismiss={handleDismiss}
           />
-        )}
-
-        {exportStatus && (
-          <div className="loading-state" style={{ marginTop: '8px' }}>
-            {exportStatus}
-          </div>
         )}
       </div>
     </div>

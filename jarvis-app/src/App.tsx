@@ -8,6 +8,7 @@ import { TranscriptDisplay } from "./components/TranscriptDisplay";
 import { Settings } from "./components/Settings";
 import { YouTubeSection } from "./components/YouTubeSection";
 import { BrowserTool } from "./components/BrowserTool";
+import { GemsPanel } from "./components/GemsPanel";
 import type { YouTubeDetectedEvent } from "./state/types";
 import "./App.css";
 
@@ -45,6 +46,7 @@ function App() {
   const [youtubeNotification, setYoutubeNotification] = useState(false);
   const [showYouTube, setShowYouTube] = useState(false);
   const [showBrowserTool, setShowBrowserTool] = useState(false);
+  const [showGems, setShowGems] = useState(false);
 
   // Load recordings on mount (Requirement 1.2)
   useEffect(() => {
@@ -265,6 +267,12 @@ function App() {
               >
                 🌐 Browser
               </button>
+              <button
+                className="hamburger-menu-item"
+                onClick={() => { setShowGems(true); setShowHamburgerMenu(false); }}
+              >
+                💎 Gems
+              </button>
             </div>
           )}
         </div>
@@ -392,6 +400,7 @@ function App() {
           transcript={state.transcript}
           status={state.transcriptionStatus}
           error={state.transcriptionError}
+          recordingFilename={state.currentRecording || (state.recordings[0]?.filename ?? null)}
         />
 
         {/* Error Display - Requirement 8.4 */}
@@ -458,6 +467,15 @@ function App() {
             if (e.target === e.currentTarget) setShowBrowserTool(false);
           }}>
             <BrowserTool onClose={() => setShowBrowserTool(false)} />
+          </div>
+        )}
+
+        {/* Gems Panel */}
+        {showGems && (
+          <div className="dialog-overlay" onClick={(e) => {
+            if (e.target === e.currentTarget) setShowGems(false);
+          }}>
+            <GemsPanel onClose={() => setShowGems(false)} />
           </div>
         )}
       </div>

@@ -1,10 +1,12 @@
-import { useEffect, useRef, useMemo } from 'react';
-import type { TranscriptionSegment, TranscriptionStatus } from '../state/types';
+import { useEffect, useRef, useMemo, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import type { TranscriptionSegment, TranscriptionStatus, PageGist, Gem } from '../state/types';
 
 interface TranscriptDisplayProps {
   transcript: TranscriptionSegment[];
   status: TranscriptionStatus;
   error: string | null;
+  recordingFilename?: string | null;
 }
 
 /**
@@ -31,8 +33,11 @@ function processTranscript(segments: TranscriptionSegment[]): TranscriptionSegme
   return result;
 }
 
-export function TranscriptDisplay({ transcript, status, error }: TranscriptDisplayProps) {
+export function TranscriptDisplay({ transcript, status, error, recordingFilename }: TranscriptDisplayProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Process transcript to handle partial → final replacement
   const displaySegments = useMemo(() => processTranscript(transcript), [transcript]);
@@ -43,6 +48,46 @@ export function TranscriptDisplay({ transcript, status, error }: TranscriptDispl
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
   }, [displaySegments]);
+
+  const handleSaveGem = async () => {
+    setSaving(true);
+    setSaveError(null);
+
+    try {
+      // Join all final segments into full transcript text
+      const fullText = displaySegments
+        .filter(s => s.is_final)
+        .map(s => s.text)
+        .join(' ');
+
+      // Construct PageGist object
+      const gist: PageGist = {
+        url: `jarvis://recording/${Date.now()}`,
+        title: `Audio Transcript – ${new Date().toLocaleString()}`,
+        source_type: 'Other',
+        domain: 'jarvis-app',
+        author: null,
+        description: null,
+        content_excerpt: fullText,
+        published_date: new Date().toISOString(),
+        image_url: null,
+        extra: {
+          segment_count: displaySegments.filter(s => s.is_final).length,
+          source: 'audio_transcription',
+          recording_filename: recordingFilename || null,
+        },
+      };
+
+      await invoke<Gem>('save_gem', { gist });
+      setSaved(true);
+    } catch (err) {
+      setSaveError(String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const hasFinalSegments = displaySegments.filter(s => s.is_final).length > 0;
 
   if (status === 'disabled') {
     return null; // Don't show component if transcription is disabled
@@ -61,7 +106,23 @@ export function TranscriptDisplay({ transcript, status, error }: TranscriptDispl
         {status === 'error' && error && (
           <span className="error-indicator">⚠️ {error}</span>
         )}
+        {hasFinalSegments && (
+          <button
+            onClick={handleSaveGem}
+            className="save-gem-button"
+            disabled={saved || saving}
+            style={{ marginLeft: '10px' }}
+          >
+            {saved ? 'Saved' : saving ? 'Saving...' : 'Save Gem'}
+          </button>
+        )}
       </div>
+
+      {saveError && (
+        <div className="error-state" style={{ marginBottom: '12px' }}>
+          {saveError}
+        </div>
+      )}
 
       <div className="transcript-content" ref={containerRef}>
         {displaySegments.length === 0 && status === 'idle' && (

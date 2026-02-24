@@ -1,4 +1,5 @@
 use crate::files::{FileManager, RecordingMetadata};
+use crate::gems::{Gem, GemPreview, GemStore};
 use crate::platform::PlatformDetector;
 use crate::recording::RecordingManager;
 use crate::settings::{ModelManager, Settings, SettingsManager};
@@ -7,6 +8,379 @@ use crate::wav::WavConverter;
 use serde::Serialize;
 use std::sync::{Arc, Mutex, RwLock};
 use tauri::{Emitter, State};
+
+/// Helper function to map PageGist to Gem
+/// 
+/// This function converts a PageGist (from browser extractors) into a Gem
+/// for persistence. It generates a new UUID and timestamp, and merges
+/// published_date and image_url into source_meta alongside the extra field.
+fn page_gist_to_gem(gist: crate::browser::extractors::PageGist) -> Gem {
+    // Merge published_date and image_url into source_meta
+    let source_meta = if let serde_json::Value::Object(mut map) = gist.extra {
+        // Start with the extra field as base
+        if let Some(published_date) = gist.published_date {
+            map.insert("published_date".to_string(), serde_json::Value::String(published_date));
+        }
+        if let Some(image_url) = gist.image_url {
+            map.insert("image_url".to_string(), serde_json::Value::String(image_url));
+        }
+        serde_json::Value::Object(map)
+    } else {
+        // If extra is not an object, create a new object with all metadata
+        let mut map = serde_json::Map::new();
+        if let Some(published_date) = gist.published_date {
+            map.insert("published_date".to_string(), serde_json::Value::String(published_date));
+        }
+        if let Some(image_url) = gist.image_url {
+            map.insert("image_url".to_string(), serde_json::Value::String(image_url));
+        }
+        serde_json::Value::Object(map)
+    };
+
+    Gem {
+        id: uuid::Uuid::new_v4().to_string(),
+        source_type: format!("{:?}", gist.source_type),
+        source_url: gist.url,
+        domain: gist.domain,
+        title: gist.title,
+        author: gist.author,
+        description: gist.description,
+        content: gist.content_excerpt,
+        source_meta,
+        captured_at: chrono::Utc::now().to_rfc3339(),
+    }
+}
+
+/// Save a PageGist as a Gem
+///
+/// This command converts a PageGist (from browser extractors) into a Gem
+/// and persists it via the GemStore trait. It generates a UUID and timestamp,
+/// maps fields, and merges published_date and image_url into source_meta.
+///
+/// # Arguments
+///
+/// * `gist` - The PageGist to save (from browser extraction)
+/// * `gem_store` - Managed state containing the GemStore trait object
+///
+/// # Returns
+///
+/// * `Ok(Gem)` - The saved gem (including generated id and captured_at)
+/// * `Err(String)` - Error message if save fails
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The GemStore save operation fails
+/// - Database connection issues occur
+///
+/// # Examples
+///
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+///
+/// interface PageGist {
+///   url: string;
+///   title: string;
+///   source_type: string;
+///   domain: string;
+///   author?: string;
+///   description?: string;
+///   content_excerpt?: string;
+///   published_date?: string;
+///   image_url?: string;
+///   extra: Record<string, any>;
+/// }
+///
+/// interface Gem {
+///   id: string;
+///   source_type: string;
+///   source_url: string;
+///   domain: string;
+///   title: string;
+///   author?: string;
+///   description?: string;
+///   content?: string;
+///   source_meta: Record<string, any>;
+///   captured_at: string;
+/// }
+///
+/// try {
+///   const gem: Gem = await invoke('save_gem', { gist: myPageGist });
+///   console.log(`Gem saved with ID: ${gem.id}`);
+/// } catch (error) {
+///   console.error(`Failed to save gem: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn save_gem(
+    gist: crate::browser::extractors::PageGist,
+    gem_store: State<'_, Arc<dyn GemStore>>,
+) -> Result<Gem, String> {
+    // Convert PageGist to Gem using the helper function
+    let gem = page_gist_to_gem(gist);
+
+    // Save via GemStore trait
+    gem_store.save(gem).await
+}
+
+/// List gems with pagination
+///
+/// This command returns all gems ordered by captured_at descending (most recent first).
+/// Supports pagination via limit and offset parameters.
+///
+/// # Arguments
+///
+/// * `limit` - Optional maximum number of gems to return (default: 50)
+/// * `offset` - Optional number of gems to skip for pagination (default: 0)
+/// * `gem_store` - Managed state containing the GemStore trait object
+///
+/// # Returns
+///
+/// * `Ok(Vec<GemPreview>)` - Array of gem previews with truncated content
+/// * `Err(String)` - Error message if listing fails
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The GemStore list operation fails
+/// - Database connection issues occur
+///
+/// # Examples
+///
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+///
+/// interface GemPreview {
+///   id: string;
+///   source_type: string;
+///   source_url: string;
+///   domain: string;
+///   title: string;
+///   author?: string;
+///   description?: string;
+///   content_preview?: string;  // Truncated to 200 characters
+///   captured_at: string;
+/// }
+///
+/// // List first 50 gems (default)
+/// try {
+///   const gems: GemPreview[] = await invoke('list_gems');
+///   console.log(`Found ${gems.length} gems`);
+/// } catch (error) {
+///   console.error(`Failed to list gems: ${error}`);
+/// }
+///
+/// // List with custom limit and offset
+/// try {
+///   const gems: GemPreview[] = await invoke('list_gems', {
+///     limit: 20,
+///     offset: 40
+///   });
+///   console.log(`Page 3: ${gems.length} gems`);
+/// } catch (error) {
+///   console.error(`Failed to list gems: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn list_gems(
+    limit: Option<usize>,
+    offset: Option<usize>,
+    gem_store: State<'_, Arc<dyn GemStore>>,
+) -> Result<Vec<GemPreview>, String> {
+    gem_store.list(limit.unwrap_or(50), offset.unwrap_or(0)).await
+}
+
+/// Search gems by keyword
+///
+/// This command searches gems using full-text search (FTS5) on title, description,
+/// and content fields. Results are ranked by relevance. Empty queries return the
+/// same results as list_gems.
+///
+/// # Arguments
+///
+/// * `query` - Search query string (supports FTS5 syntax)
+/// * `limit` - Optional maximum number of results to return (default: 50)
+/// * `gem_store` - Managed state containing the GemStore trait object
+///
+/// # Returns
+///
+/// * `Ok(Vec<GemPreview>)` - Array of gem previews ranked by relevance
+/// * `Err(String)` - Error message if search fails
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The GemStore search operation fails
+/// - Database connection issues occur
+/// - FTS5 query syntax is invalid
+///
+/// # Examples
+///
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+///
+/// interface GemPreview {
+///   id: string;
+///   source_type: string;
+///   source_url: string;
+///   domain: string;
+///   title: string;
+///   author?: string;
+///   description?: string;
+///   content_preview?: string;  // Truncated to 200 characters
+///   captured_at: string;
+/// }
+///
+/// // Basic keyword search
+/// try {
+///   const gems: GemPreview[] = await invoke('search_gems', {
+///     query: 'rust async'
+///   });
+///   console.log(`Found ${gems.length} gems matching "rust async"`);
+/// } catch (error) {
+///   console.error(`Failed to search gems: ${error}`);
+/// }
+///
+/// // Search with custom limit
+/// try {
+///   const gems: GemPreview[] = await invoke('search_gems', {
+///     query: 'OAuth token',
+///     limit: 20
+///   });
+///   console.log(`Top 20 results for "OAuth token"`);
+/// } catch (error) {
+///   console.error(`Failed to search gems: ${error}`);
+/// }
+///
+/// // Empty query returns all gems (same as list_gems)
+/// try {
+///   const gems: GemPreview[] = await invoke('search_gems', {
+///     query: ''
+///   });
+///   console.log(`All gems: ${gems.length}`);
+/// } catch (error) {
+///   console.error(`Failed to search gems: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn search_gems(
+    query: String,
+    limit: Option<usize>,
+    gem_store: State<'_, Arc<dyn GemStore>>,
+) -> Result<Vec<GemPreview>, String> {
+    gem_store.search(&query, limit.unwrap_or(50)).await
+}
+
+/// Delete a gem by ID
+///
+/// This command deletes a gem from the store by its unique identifier.
+/// Returns an error if the gem is not found.
+///
+/// # Arguments
+///
+/// * `id` - The unique identifier of the gem to delete
+/// * `gem_store` - Managed state containing the GemStore trait object
+///
+/// # Returns
+///
+/// * `Ok(())` - Gem deleted successfully
+/// * `Err(String)` - Error message if deletion fails
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The gem with the specified ID does not exist
+/// - The GemStore delete operation fails
+/// - Database connection issues occur
+///
+/// # Examples
+///
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+///
+/// try {
+///   await invoke('delete_gem', {
+///     id: '550e8400-e29b-41d4-a716-446655440000'
+///   });
+///   console.log('Gem deleted successfully');
+/// } catch (error) {
+///   console.error(`Failed to delete gem: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn delete_gem(
+    id: String,
+    gem_store: State<'_, Arc<dyn GemStore>>,
+) -> Result<(), String> {
+    gem_store.delete(&id).await
+}
+
+/// Get a gem by ID
+///
+/// This command retrieves a gem from the store by its unique identifier.
+/// Returns None if the gem is not found (not an error), returns Err only
+/// on database errors.
+///
+/// # Arguments
+///
+/// * `id` - The unique identifier of the gem to retrieve
+/// * `gem_store` - Managed state containing the GemStore trait object
+///
+/// # Returns
+///
+/// * `Ok(Some(Gem))` - Gem found and returned with full content
+/// * `Ok(None)` - Gem not found (not an error condition)
+/// * `Err(String)` - Error message if database operation fails
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The GemStore get operation fails
+/// - Database connection issues occur
+///
+/// Note: A missing gem (None) is not considered an error - it's a valid result
+/// indicating the gem doesn't exist in the store.
+///
+/// # Examples
+///
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+///
+/// interface Gem {
+///   id: string;
+///   source_type: string;
+///   source_url: string;
+///   domain: string;
+///   title: string;
+///   author?: string;
+///   description?: string;
+///   content?: string;
+///   source_meta: Record<string, any>;
+///   captured_at: string;
+/// }
+///
+/// try {
+///   const gem: Gem | null = await invoke('get_gem', {
+///     id: '550e8400-e29b-41d4-a716-446655440000'
+///   });
+///   
+///   if (gem) {
+///     console.log(`Found gem: ${gem.title}`);
+///   } else {
+///     console.log('Gem not found');
+///   }
+/// } catch (error) {
+///   console.error(`Database error: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn get_gem(
+    id: String,
+    gem_store: State<'_, Arc<dyn GemStore>>,
+) -> Result<Option<Gem>, String> {
+    gem_store.get(&id).await
+}
+
 
 /// WhisperKit availability status
 /// 

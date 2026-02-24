@@ -3,6 +3,7 @@ pub mod browser;
 pub mod commands;
 pub mod error;
 pub mod files;
+pub mod gems;
 pub mod platform;
 pub mod recording;
 pub mod settings;
@@ -13,6 +14,7 @@ pub mod wav;
 use std::sync::{Arc, Mutex, RwLock};
 use tauri::Manager;
 use files::FileManager;
+use gems::{GemStore, SqliteGemStore};
 use recording::RecordingManager;
 use settings::{ModelManager, SettingsManager};
 use shortcuts::ShortcutManager;
@@ -30,6 +32,11 @@ pub fn run() {
             let file_manager = FileManager::new()
                 .map_err(|e| format!("Failed to initialize FileManager: {}", e))?;
             app.manage(file_manager);
+            
+            // Initialize GemStore (SqliteGemStore as default implementation)
+            let gem_store = SqliteGemStore::new()
+                .map_err(|e| format!("Failed to initialize gem store: {}", e))?;
+            app.manage(Arc::new(gem_store) as Arc<dyn GemStore>);
             
             // Initialize SettingsManager and add to managed state (wrapped in Arc<RwLock>)
             let settings_manager = SettingsManager::new()
@@ -200,6 +207,11 @@ pub fn run() {
             commands::list_browser_tabs,
             commands::prepare_tab_gist,
             commands::export_gist,
+            commands::save_gem,
+            commands::list_gems,
+            commands::search_gems,
+            commands::delete_gem,
+            commands::get_gem,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
