@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IntelligenceKit Test UI</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --accent: #e94560;
+    --accent2: #533483;
+    --text: #eee;
+    --text2: #aaa;
+    --success: #4ecca3;
+    --error: #e94560;
+    --mono: 'SF Mono', 'Menlo', 'Monaco', monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 20px;
+  }
+
+  h1 { font-size: 1.4em; font-weight: 600; }
+  h2 { font-size: 1.1em; font-weight: 600; margin-bottom: 12px; color: var(--text2); }
+
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--surface2);
+  }
+
+  .header-left { display: flex; align-items: center; gap: 12px; }
+
+  .status-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--error);
+    transition: background 0.3s;
+  }
+  .status-dot.running { background: var(--success); }
+
+  .status-text {
+    font-size: 0.85em;
+    color: var(--text2);
+    font-family: var(--mono);
+  }
+
+  .btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.85em;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: var(--sans);
+    transition: opacity 0.2s;
+  }
+  .btn:hover { opacity: 0.85; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .btn-start { background: var(--success); color: #111; }
+  .btn-stop { background: var(--error); color: #fff; }
+  .btn-send { background: var(--accent2); color: #fff; }
+  .btn-small {
+    padding: 5px 10px;
+    font-size: 0.8em;
+    background: var(--surface2);
+    color: var(--text);
+    border-radius: 4px;
+  }
+  .btn-quick {
+    padding: 6px 12px;
+    font-size: 0.8em;
+    background: var(--surface2);
+    color: var(--text);
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  .panel {
+    background: var(--surface);
+    border-radius: 10px;
+    padding: 20px;
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+
+  .full-width { grid-column: 1 / -1; }
+
+  /* Quick actions */
+  .quick-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+
+  /* Message form */
+  .form-group { margin-bottom: 14px; }
+  .form-group label {
+    display: block;
+    font-size: 0.8em;
+    color: var(--text2);
+    margin-bottom: 4px;
+    font-family: var(--mono);
+  }
+
+  .form-group input,
+  .form-group textarea,
+  .form-group select {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--bg);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 0.85em;
+    resize: vertical;
+  }
+  .form-group textarea { min-height: 100px; }
+  .form-group select { appearance: none; cursor: pointer; }
+  .form-group input:focus,
+  .form-group textarea:focus,
+  .form-group select:focus {
+    outline: none;
+    border-color: var(--accent2);
+  }
+
+  /* Session info */
+  .session-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--bg);
+    border-radius: 6px;
+    margin-bottom: 14px;
+    font-family: var(--mono);
+    font-size: 0.8em;
+  }
+  .session-bar .label { color: var(--text2); }
+  .session-bar .value { color: var(--success); }
+  .session-bar .none { color: var(--text2); font-style: italic; }
+
+  /* Response log */
+  .log {
+    background: var(--bg);
+    border-radius: 6px;
+    padding: 12px;
+    font-family: var(--mono);
+    font-size: 0.8em;
+    max-height: 500px;
+    overflow-y: auto;
+    line-height: 1.6;
+  }
+
+  .log-entry {
+    padding: 8px 10px;
+    border-radius: 4px;
+    margin-bottom: 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .log-entry.request { background: rgba(83, 52, 131, 0.2); border-left: 3px solid var(--accent2); }
+  .log-entry.response { background: rgba(78, 204, 163, 0.1); border-left: 3px solid var(--success); }
+  .log-entry.error { background: rgba(233, 69, 96, 0.1); border-left: 3px solid var(--error); }
+  .log-entry.info { background: rgba(255,255,255,0.03); border-left: 3px solid var(--text2); }
+
+  .log-time {
+    font-size: 0.75em;
+    color: var(--text2);
+    margin-bottom: 2px;
+  }
+
+  /* Stderr log */
+  .stderr-log {
+    background: var(--bg);
+    border-radius: 6px;
+    padding: 12px;
+    font-family: var(--mono);
+    font-size: 0.75em;
+    max-height: 200px;
+    overflow-y: auto;
+    color: var(--text2);
+    line-height: 1.5;
+  }
+
+  .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid rgba(255,255,255,0.2);
+    border-top-color: var(--accent2);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .loading-overlay {
+    display: none;
+    align-items: center;
+    padding: 10px 14px;
+    background: rgba(83, 52, 131, 0.15);
+    border-radius: 6px;
+    font-size: 0.85em;
+    margin-bottom: 14px;
+    color: var(--text2);
+  }
+  .loading-overlay.visible { display: flex; }
+
+  /* Raw JSON panel */
+  .raw-json-area {
+    width: 100%;
+    min-height: 60px;
+    padding: 10px 12px;
+    background: var(--bg);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 0.85em;
+    resize: vertical;
+    margin-bottom: 10px;
+  }
+
+  .tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 16px;
+  }
+  .tab {
+    padding: 8px 16px;
+    background: var(--bg);
+    border: 1px solid rgba(255,255,255,0.06);
+    color: var(--text2);
+    cursor: pointer;
+    font-size: 0.85em;
+    font-family: var(--sans);
+  }
+  .tab:first-child { border-radius: 6px 0 0 6px; }
+  .tab:last-child { border-radius: 0 6px 6px 0; }
+  .tab.active {
+    background: var(--surface2);
+    color: var(--text);
+    border-color: var(--surface2);
+  }
+</style>
+</head>
+<body>
+
+<div style="max-width: 1400px; margin: 0 auto;">
+  <div class="header">
+    <div class="header-left">
+      <h1>IntelligenceKit Test UI</h1>
+      <div class="status-dot" id="statusDot"></div>
+      <span class="status-text" id="statusText">Stopped</span>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button class="btn btn-start" id="startBtn" onclick="startServer()">Start</button>
+      <button class="btn btn-stop" id="stopBtn" onclick="stopServer()" disabled>Stop</button>
+    </div>
+  </div>
+
+  <div class="layout">
+    <!-- Left: Controls -->
+    <div>
+      <!-- Quick Actions -->
+      <div class="panel" style="margin-bottom: 20px;">
+        <h2>Quick Actions</h2>
+        <div class="quick-actions">
+          <button class="btn btn-quick" onclick="checkAvailability()">Check Availability</button>
+          <button class="btn btn-quick" onclick="openSession()">Open Session</button>
+          <button class="btn btn-quick" onclick="closeCurrentSession()">Close Session</button>
+          <button class="btn btn-quick" onclick="shutdown()">Shutdown</button>
+        </div>
+
+        <div class="session-bar">
+          <span class="label">Session:</span>
+          <span id="sessionId" class="none">none</span>
+          <span style="flex:1"></span>
+          <button class="btn btn-small" onclick="copySessionId()" style="display:none" id="copySessionBtn">Copy</button>
+        </div>
+      </div>
+
+      <!-- Message Form -->
+      <div class="panel" style="margin-bottom: 20px;">
+        <h2>Send Message</h2>
+
+        <div class="form-group">
+          <label>prompt</label>
+          <input type="text" id="promptInput" placeholder="e.g., Generate 3-5 topic tags for this content" value="Generate 3-5 topic tags for this content">
+        </div>
+
+        <div class="form-group">
+          <label>content</label>
+          <textarea id="contentInput" placeholder="Paste your article or text content here..."></textarea>
+        </div>
+
+        <div class="form-group">
+          <label>output_format</label>
+          <select id="formatSelect">
+            <option value="string_list">string_list</option>
+            <option value="text">text</option>
+          </select>
+        </div>
+
+        <div class="loading-overlay" id="loadingOverlay">
+          <div class="spinner"></div>
+          <span>Processing...</span>
+        </div>
+
+        <button class="btn btn-send" onclick="sendMessage()" style="width:100%">Send Message</button>
+      </div>
+
+      <!-- Raw JSON -->
+      <div class="panel">
+        <h2>Raw JSON</h2>
+        <textarea class="raw-json-area" id="rawJsonInput" placeholder='{"command":"check-availability"}'></textarea>
+        <button class="btn btn-send" onclick="sendRawJson()" style="width:100%">Send Raw JSON</button>
+      </div>
+    </div>
+
+    <!-- Right: Logs -->
+    <div>
+      <div class="panel" style="margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <h2 style="margin-bottom: 0;">Response Log</h2>
+          <button class="btn btn-small" onclick="clearLog()">Clear</button>
+        </div>
+        <div class="log" id="responseLog">
+          <div class="log-entry info">Ready. Click "Start" to launch IntelligenceKit.</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <h2 style="margin-bottom: 0;">Server Logs (stderr)</h2>
+          <button class="btn btn-small" onclick="refreshStderr()">Refresh</button>
+        </div>
+        <div class="stderr-log" id="stderrLog">Waiting for server to start...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  let currentSessionId = null;
+
+  // --- Utility ---
+  function now() {
+    return new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  function addLog(type, content) {
+    const log = document.getElementById('responseLog');
+    const entry = document.createElement('div');
+    entry.className = `log-entry ${type}`;
+
+    const time = document.createElement('div');
+    time.className = 'log-time';
+    time.textContent = now();
+    entry.appendChild(time);
+
+    const body = document.createElement('div');
+    if (typeof content === 'string') {
+      body.textContent = content;
+    } else {
+      body.textContent = JSON.stringify(content, null, 2);
+    }
+    entry.appendChild(body);
+
+    log.appendChild(entry);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function setSession(id) {
+    currentSessionId = id;
+    const el = document.getElementById('sessionId');
+    const copyBtn = document.getElementById('copySessionBtn');
+    if (id) {
+      el.textContent = id;
+      el.className = 'value';
+      copyBtn.style.display = 'block';
+    } else {
+      el.textContent = 'none';
+      el.className = 'none';
+      copyBtn.style.display = 'none';
+    }
+  }
+
+  function setStatus(running) {
+    document.getElementById('statusDot').className = `status-dot ${running ? 'running' : ''}`;
+    document.getElementById('statusText').textContent = running ? 'Running' : 'Stopped';
+    document.getElementById('startBtn').disabled = running;
+    document.getElementById('stopBtn').disabled = !running;
+  }
+
+  function setLoading(on) {
+    document.getElementById('loadingOverlay').className = `loading-overlay ${on ? 'visible' : ''}`;
+  }
+
+  // --- API calls ---
+  async function startServer() {
+    addLog('info', 'Starting IntelligenceKit...');
+    try {
+      const res = await fetch('/api/start', { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) {
+        setStatus(true);
+        addLog('info', 'IntelligenceKit started successfully');
+        setTimeout(refreshStderr, 1000);
+      } else {
+        addLog('error', 'Failed to start IntelligenceKit');
+      }
+    } catch (e) {
+      addLog('error', `Error: ${e.message}`);
+    }
+  }
+
+  async function stopServer() {
+    addLog('info', 'Stopping IntelligenceKit...');
+    try {
+      await fetch('/api/stop', { method: 'POST' });
+      setStatus(false);
+      setSession(null);
+      addLog('info', 'IntelligenceKit stopped');
+    } catch (e) {
+      addLog('error', `Error: ${e.message}`);
+    }
+  }
+
+  async function sendToIK(command) {
+    const json = JSON.stringify(command);
+    addLog('request', command);
+
+    try {
+      const res = await fetch('/api/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: json,
+      });
+      const data = await res.json();
+      addLog(data.ok === false ? 'error' : 'response', data);
+      return data;
+    } catch (e) {
+      addLog('error', `Error: ${e.message}`);
+      return null;
+    }
+  }
+
+  async function checkAvailability() {
+    await sendToIK({ command: 'check-availability' });
+  }
+
+  async function openSession() {
+    const data = await sendToIK({ command: 'open-session' });
+    if (data && data.ok && data.session_id) {
+      setSession(data.session_id);
+    }
+  }
+
+  async function closeCurrentSession() {
+    if (!currentSessionId) {
+      addLog('error', 'No active session to close');
+      return;
+    }
+    await sendToIK({ command: 'close-session', session_id: currentSessionId });
+    setSession(null);
+  }
+
+  async function shutdown() {
+    await sendToIK({ command: 'shutdown' });
+    setStatus(false);
+    setSession(null);
+  }
+
+  async function sendMessage() {
+    if (!currentSessionId) {
+      addLog('error', 'No active session. Click "Open Session" first.');
+      return;
+    }
+
+    const prompt = document.getElementById('promptInput').value.trim();
+    const content = document.getElementById('contentInput').value.trim();
+    const format = document.getElementById('formatSelect').value;
+
+    if (!prompt) { addLog('error', 'Prompt is required'); return; }
+    if (!content) { addLog('error', 'Content is required'); return; }
+
+    setLoading(true);
+    const startTime = performance.now();
+
+    await sendToIK({
+      command: 'message',
+      session_id: currentSessionId,
+      prompt,
+      content,
+      output_format: format,
+    });
+
+    const elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
+    addLog('info', `Completed in ${elapsed}s`);
+    setLoading(false);
+    setTimeout(refreshStderr, 500);
+  }
+
+  async function sendRawJson() {
+    const raw = document.getElementById('rawJsonInput').value.trim();
+    if (!raw) { addLog('error', 'Enter JSON to send'); return; }
+
+    try {
+      // Validate it's valid JSON
+      const parsed = JSON.parse(raw);
+      const data = await sendToIK(parsed);
+      // Auto-capture session ID if present
+      if (data && data.session_id) {
+        setSession(data.session_id);
+      }
+    } catch (e) {
+      if (e instanceof SyntaxError) {
+        addLog('error', `Invalid JSON: ${e.message}`);
+      } else {
+        addLog('error', `Error: ${e.message}`);
+      }
+    }
+  }
+
+  async function refreshStderr() {
+    try {
+      const res = await fetch('/api/logs');
+      const logs = await res.json();
+      const el = document.getElementById('stderrLog');
+      if (logs.length === 0) {
+        el.textContent = 'No logs yet...';
+      } else {
+        el.textContent = logs.map(l => `[${l.time.split('T')[1].slice(0,8)}] ${l.message}`).join('\n');
+        el.scrollTop = el.scrollHeight;
+      }
+    } catch (_) {}
+  }
+
+  function clearLog() {
+    document.getElementById('responseLog').innerHTML = '';
+  }
+
+  function copySessionId() {
+    if (currentSessionId) {
+      navigator.clipboard.writeText(currentSessionId);
+      addLog('info', 'Session ID copied to clipboard');
+    }
+  }
+
+  // Check status on load
+  (async function init() {
+    try {
+      const res = await fetch('/api/status');
+      const data = await res.json();
+      setStatus(data.running);
+      if (data.running) refreshStderr();
+    } catch (_) {}
+  })();
+
+  // Poll stderr every 5s if running
+  setInterval(() => {
+    if (document.getElementById('statusDot').classList.contains('running')) {
+      refreshStderr();
+    }
+  }, 5000);
+
+  // Keyboard shortcut: Ctrl+Enter to send message
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+</script>
+
+</body>
+</html>
