@@ -385,6 +385,21 @@ export interface Gem {
   
   /** ISO 8601 timestamp when gem was captured */
   captured_at: string;
+  
+  /** AI-generated enrichment metadata (tags, summary, provider info) */
+  ai_enrichment: {
+    /** AI-generated topic tags (1-5 tags) */
+    tags: string[];
+    
+    /** AI-generated one-sentence summary */
+    summary: string;
+    
+    /** Provider that generated the enrichment (e.g., "intelligencekit") */
+    provider: string;
+    
+    /** ISO 8601 timestamp when enrichment was generated */
+    enriched_at: string;
+  } | null;
 }
 
 /** Lightweight gem for list/search results matching Rust GemPreview struct */
@@ -415,4 +430,25 @@ export interface GemPreview {
   
   /** ISO 8601 timestamp when gem was captured */
   captured_at: string;
+  
+  /** AI-generated topic tags (1-5 tags, extracted from ai_enrichment) */
+  tags: string[] | null;
+  
+  /** AI-generated one-sentence summary (extracted from ai_enrichment) */
+  summary: string | null;
+}
+
+/**
+ * IntelligenceKit types
+ * 
+ * These types define the structure for AI enrichment availability and status
+ */
+
+/** AI enrichment availability status matching Rust AvailabilityResult struct */
+export interface AvailabilityResult {
+  /** Whether AI enrichment is available on this system */
+  available: boolean;
+  
+  /** Reason why AI enrichment is unavailable (undefined if available) */
+  reason?: string;
 }

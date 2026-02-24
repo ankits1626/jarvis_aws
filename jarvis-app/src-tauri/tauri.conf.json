@@ -34,7 +34,8 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/JarvisListen"
+      "binaries/JarvisListen",
+      "binaries/IntelligenceKit"
     ],
     "macOS": {
       "infoPlist": "Info.plist",

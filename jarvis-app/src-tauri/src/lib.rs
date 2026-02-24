@@ -4,6 +4,7 @@ pub mod commands;
 pub mod error;
 pub mod files;
 pub mod gems;
+pub mod intelligence;
 pub mod platform;
 pub mod recording;
 pub mod settings;
@@ -37,6 +38,20 @@ pub fn run() {
             let gem_store = SqliteGemStore::new()
                 .map_err(|e| format!("Failed to initialize gem store: {}", e))?;
             app.manage(Arc::new(gem_store) as Arc<dyn GemStore>);
+            
+            // Initialize IntelProvider (IntelligenceKit with graceful fallback to NoOpProvider)
+            let app_handle = app.handle().clone();
+            let intel_provider = tauri::async_runtime::block_on(async move {
+                intelligence::create_provider(app_handle).await
+            });
+            let availability = tauri::async_runtime::block_on(intel_provider.check_availability());
+            if availability.available {
+                eprintln!("IntelligenceKit: AI enrichment available");
+            } else {
+                eprintln!("IntelligenceKit: AI enrichment unavailable - {}", 
+                    availability.reason.unwrap_or_else(|| "Unknown reason".to_string()));
+            }
+            app.manage(intel_provider);
             
             // Initialize SettingsManager and add to managed state (wrapped in Arc<RwLock>)
             let settings_manager = SettingsManager::new()
@@ -212,6 +227,9 @@ pub fn run() {
             commands::search_gems,
             commands::delete_gem,
             commands::get_gem,
+            commands::enrich_gem,
+            commands::check_intel_availability,
+            commands::filter_gems_by_tag,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

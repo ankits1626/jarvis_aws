@@ -1,0 +1,27 @@
+Phase 1: Core Provider Infrastructure (Tasks 1-6)
+
+Set up module structure
+Implement IntelProvider trait
+Build IntelligenceKitProvider with sidecar lifecycle
+Implement NDJSON communication
+Session management
+Trait implementation
+Phase 2: Database Schema & Storage (Tasks 8-10)
+
+Extend Gem schema
+Database migration
+SqliteGemStore enrichment methods
+Phase 3: Backend Commands (Tasks 11-12)
+
+Enrichment commands
+Tauri integration
+Phase 4: Frontend Integration (Tasks 14-16)
+
+TypeScript types
+GemsPanel enhancements
+GistCard updates
+Phase 5: Testing & Validation (Tasks 7, 13, 17-18)
+
+Checkpoints
+Manual testing
+Would you like me to start implementing these tasks sequentially, or would you prefer to focus on a specific phase first?

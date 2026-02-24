@@ -2091,3 +2091,125 @@ h1 {
   width: 100%;
   height: 32px;
 }
+
+/* AI Enrichment Styles */
+.ai-badge {
+  display: inline-block;
+  margin-left: 10px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.ai-badge.available {
+  background: #10b981;
+  color: white;
+}
+
+.ai-badge.unavailable {
+  background: #6b7280;
+  color: white;
+}
+
+.gem-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.gem-tag {
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.gem-tag:hover {
+  background: #5568d3;
+  transform: translateY(-1px);
+}
+
+.gem-summary {
+  font-size: 13px;
+  color: #444;
+  line-height: 1.5;
+  margin-bottom: 8px;
+  padding: 8px;
+  background: #f0f4ff;
+  border-left: 3px solid #667eea;
+  border-radius: 4px;
+  font-style: italic;
+}
+
+.gem-enrich-button {
+  background: #f59e0b;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.2s;
+  line-height: 1;
+}
+
+.gem-enrich-button:hover:not(:disabled) {
+  background: #d97706;
+  transform: translateY(-1px);
+}
+
+.gem-enrich-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.active-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: #f0f4ff;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #333;
+}
+
+.clear-filter-button {
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  line-height: 1;
+}
+
+.clear-filter-button:hover {
+  background: #5568d3;
+}
+
+.ai-enrichment-notice {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: #f0f4ff;
+  border-left: 3px solid #f59e0b;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #333;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}

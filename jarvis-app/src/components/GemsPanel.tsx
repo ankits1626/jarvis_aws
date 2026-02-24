@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
-import type { GemPreview, Gem } from '../state/types';
+import type { GemPreview, Gem, AvailabilityResult } from '../state/types';
 
 interface GemsPanelProps {
   onClose: () => void;
@@ -21,7 +21,17 @@ const SOURCE_BADGE_CLASS: Record<string, string> = {
   Other: 'source-badge other',
 };
 
-function GemCard({ gem, onDelete }: { gem: GemPreview; onDelete: (id: string) => Promise<void> }) {
+function GemCard({ 
+  gem, 
+  onDelete, 
+  aiAvailable,
+  onFilterByTag 
+}: { 
+  gem: GemPreview; 
+  onDelete: (id: string) => Promise<void>;
+  aiAvailable: boolean;
+  onFilterByTag: (tag: string) => void;
+}) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -30,6 +40,36 @@ function GemCard({ gem, onDelete }: { gem: GemPreview; onDelete: (id: string) =>
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [audioLoading, setAudioLoading] = useState(false);
   const [audioError, setAudioError] = useState<string | null>(null);
+  const [enriching, setEnriching] = useState(false);
+  const [enrichError, setEnrichError] = useState<string | null>(null);
+  const [localGem, setLocalGem] = useState<GemPreview>(gem);
+
+  // Update local gem when prop changes (e.g., after enrichment)
+  useEffect(() => {
+    setLocalGem(gem);
+  }, [gem]);
+
+  const handleEnrich = async () => {
+    setEnriching(true);
+    setEnrichError(null);
+    try {
+      const enrichedGem = await invoke<Gem>('enrich_gem', { id: localGem.id });
+      // Update local state with new tags and summary
+      setLocalGem({
+        ...localGem,
+        tags: enrichedGem.ai_enrichment?.tags || null,
+        summary: enrichedGem.ai_enrichment?.summary || null,
+      });
+      // Also update fullGem if it's cached
+      if (fullGem) {
+        setFullGem(enrichedGem);
+      }
+    } catch (err) {
+      setEnrichError(String(err));
+    } finally {
+      setEnriching(false);
+    }
+  };
 
   const handleDelete = async () => {
     setDeleting(true);
@@ -126,6 +166,26 @@ function GemCard({ gem, onDelete }: { gem: GemPreview; onDelete: (id: string) =>
       {gem.description && (
         <div className="gem-description">{gem.description}</div>
       )}
+      
+      {localGem.tags && localGem.tags.length > 0 && (
+        <div className="gem-tags">
+          {localGem.tags.map((tag, idx) => (
+            <button
+              key={idx}
+              className="gem-tag"
+              onClick={() => onFilterByTag(tag)}
+              title={`Filter by tag: ${tag}`}
+            >
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
+      
+      {localGem.summary && (
+        <div className="gem-summary">{localGem.summary}</div>
+      )}
+      
       {!expanded && gem.content_preview && (
         <div className="gem-preview">{gem.content_preview}</div>
       )}
@@ -162,6 +222,16 @@ function GemCard({ gem, onDelete }: { gem: GemPreview; onDelete: (id: string) =>
         >
           {loading ? '...' : expanded ? 'Collapse' : 'View'}
         </button>
+        {aiAvailable && (
+          <button
+            onClick={handleEnrich}
+            className="gem-enrich-button"
+            disabled={enriching}
+            title={localGem.tags ? 'Re-enrich with AI' : 'Enrich with AI'}
+          >
+            {enriching ? '...' : localGem.tags ? '🔄' : '✨'}
+          </button>
+        )}
         {confirmDelete ? (
           <div className="gem-delete-confirm">
             <span>Delete?</span>
@@ -205,6 +275,12 @@ function GemCard({ gem, onDelete }: { gem: GemPreview; onDelete: (id: string) =>
           {audioError}
         </div>
       )}
+      
+      {enrichError && (
+        <div className="error-state" style={{ marginTop: '8px' }}>
+          {enrichError}
+        </div>
+      )}
     </div>
   );
 }
@@ -214,14 +290,38 @@ export function GemsPanel({ onClose }: GemsPanelProps) {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [aiAvailability, setAiAvailability] = useState<AvailabilityResult | null>(null);
+  const [filterTag, setFilterTag] = useState<string | null>(null);
 
-  const fetchGems = useCallback(async (query: string) => {
+  // Check AI availability on mount
+  useEffect(() => {
+    const checkAvailability = async () => {
+      try {
+        const result = await invoke<AvailabilityResult>('check_intel_availability');
+        setAiAvailability(result);
+      } catch (err) {
+        console.error('Failed to check AI availability:', err);
+        setAiAvailability({ available: false, reason: 'Failed to check' });
+      }
+    };
+    checkAvailability();
+  }, []);
+
+  const fetchGems = useCallback(async (query: string, tag: string | null) => {
     setLoading(true);
     setError(null);
     try {
-      const results = query.trim()
-        ? await invoke<GemPreview[]>('search_gems', { query })
-        : await invoke<GemPreview[]>('list_gems', {});
+      let results: GemPreview[];
+      if (tag) {
+        // Filter by tag
+        results = await invoke<GemPreview[]>('filter_gems_by_tag', { tag });
+      } else if (query.trim()) {
+        // Search by query
+        results = await invoke<GemPreview[]>('search_gems', { query });
+      } else {
+        // List all
+        results = await invoke<GemPreview[]>('list_gems', {});
+      }
       setGems(results);
     } catch (err) {
       setError(String(err));
@@ -233,10 +333,19 @@ export function GemsPanel({ onClose }: GemsPanelProps) {
   // Debounced search (300ms) - also handles initial load since searchQuery starts as ''
   useEffect(() => {
     const timer = setTimeout(() => {
-      fetchGems(searchQuery);
+      fetchGems(searchQuery, filterTag);
     }, 300);
     return () => clearTimeout(timer);
-  }, [searchQuery, fetchGems]);
+  }, [searchQuery, filterTag, fetchGems]);
+
+  const handleFilterByTag = (tag: string) => {
+    setFilterTag(tag);
+    setSearchQuery(''); // Clear search when filtering by tag
+  };
+
+  const handleClearFilter = () => {
+    setFilterTag(null);
+  };
 
   const handleDelete = async (id: string) => {
     try {
@@ -250,7 +359,21 @@ export function GemsPanel({ onClose }: GemsPanelProps) {
   return (
     <div className="settings-panel">
       <div className="settings-header">
-        <h2>Gems</h2>
+        <h2>
+          Gems
+          {aiAvailability && (
+            <span
+              className={`ai-badge ${aiAvailability.available ? 'available' : 'unavailable'}`}
+              title={
+                aiAvailability.available
+                  ? 'AI enrichment available'
+                  : `AI enrichment unavailable: ${aiAvailability.reason || 'Unknown reason'}`
+              }
+            >
+              AI
+            </span>
+          )}
+        </h2>
         <button onClick={onClose} className="close-button">×</button>
       </div>
       <div className="settings-content">
@@ -261,7 +384,16 @@ export function GemsPanel({ onClose }: GemsPanelProps) {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="gems-search-input"
+            disabled={!!filterTag}
           />
+          {filterTag && (
+            <div className="active-filter">
+              Filtering by tag: <strong>{filterTag}</strong>
+              <button onClick={handleClearFilter} className="clear-filter-button">
+                ×
+              </button>
+            </div>
+          )}
         </div>
 
         {error && (
@@ -284,7 +416,13 @@ export function GemsPanel({ onClose }: GemsPanelProps) {
 
         <div className="gems-list">
           {gems.map(gem => (
-            <GemCard key={gem.id} gem={gem} onDelete={handleDelete} />
+            <GemCard 
+              key={gem.id} 
+              gem={gem} 
+              onDelete={handleDelete}
+              aiAvailable={aiAvailability?.available || false}
+              onFilterByTag={handleFilterByTag}
+            />
           ))}
         </div>
       </div>

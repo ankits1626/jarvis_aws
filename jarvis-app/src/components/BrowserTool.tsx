@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { BrowserTab, PageGist, SourceType, Gem } from '../state/types';
+import type { BrowserTab, PageGist, SourceType, Gem, AvailabilityResult } from '../state/types';
 
 interface BrowserToolProps {
   onClose: () => void;
@@ -24,6 +24,20 @@ function GistCard({ gist, onCopy, onDismiss }: { gist: PageGist; onCopy: () => v
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [aiAvailability, setAiAvailability] = useState<AvailabilityResult | null>(null);
+
+  // Check AI availability on mount
+  useEffect(() => {
+    const checkAvailability = async () => {
+      try {
+        const result = await invoke<AvailabilityResult>('check_intel_availability');
+        setAiAvailability(result);
+      } catch (err) {
+        console.error('Failed to check AI availability:', err);
+      }
+    };
+    checkAvailability();
+  }, []);
 
   const durationSeconds = gist.extra?.duration_seconds as number | undefined;
   const formatDuration = (seconds: number): string => {
@@ -88,6 +102,11 @@ function GistCard({ gist, onCopy, onDismiss }: { gist: PageGist; onCopy: () => v
         </button>
         <button onClick={onDismiss} className="gist-dismiss-button">Dismiss</button>
       </div>
+      {aiAvailability?.available && (
+        <div className="ai-enrichment-notice">
+          ✨ AI enrichment will be added on save
+        </div>
+      )}
       {saveError && (
         <div className="error-state" style={{ marginTop: '8px' }}>
           {saveError}

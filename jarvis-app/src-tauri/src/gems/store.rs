@@ -33,6 +33,11 @@ pub struct Gem {
     
     /// ISO 8601 timestamp when gem was captured
     pub captured_at: String,
+    
+    /// AI-generated enrichment metadata (JSON blob)
+    /// Structure: {"tags": ["tag1", ...], "summary": "...", "provider": "intelligencekit", "enriched_at": "ISO 8601"}
+    /// NULL when no enrichment has been applied
+    pub ai_enrichment: Option<serde_json::Value>,
 }
 
 /// Lightweight gem for list/search results
@@ -50,6 +55,12 @@ pub struct GemPreview {
     pub content_preview: Option<String>,
     
     pub captured_at: String,
+    
+    /// AI-generated topic tags (extracted from ai_enrichment.tags)
+    pub tags: Option<Vec<String>>,
+    
+    /// AI-generated summary (extracted from ai_enrichment.summary)
+    pub summary: Option<String>,
 }
 
 /// Storage interface for gems - implementations are swappable
@@ -66,6 +77,9 @@ pub trait GemStore: Send + Sync {
     
     /// Search gems by keyword (FTS on title, description, content)
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<GemPreview>, String>;
+    
+    /// Filter gems by tag (exact match on ai_enrichment.tags array)
+    async fn filter_by_tag(&self, tag: &str, limit: usize, offset: usize) -> Result<Vec<GemPreview>, String>;
     
     /// Delete a gem by ID
     async fn delete(&self, id: &str) -> Result<(), String>;

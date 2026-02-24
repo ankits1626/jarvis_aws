@@ -1,5 +1,6 @@
 use crate::files::{FileManager, RecordingMetadata};
 use crate::gems::{Gem, GemPreview, GemStore};
+use crate::intelligence::IntelProvider;
 use crate::platform::PlatformDetector;
 use crate::recording::RecordingManager;
 use crate::settings::{ModelManager, Settings, SettingsManager};
@@ -48,7 +49,43 @@ fn page_gist_to_gem(gist: crate::browser::extractors::PageGist) -> Gem {
         content: gist.content_excerpt,
         source_meta,
         captured_at: chrono::Utc::now().to_rfc3339(),
+        ai_enrichment: None,
     }
+}
+
+/// Helper function to enrich content with AI-generated metadata
+/// 
+/// This function calls the IntelProvider to generate tags and a summary
+/// for the given content, then builds the ai_enrichment JSON structure.
+/// 
+/// # Arguments
+/// 
+/// * `provider` - The IntelProvider trait object
+/// * `content` - The content to enrich
+/// 
+/// # Returns
+/// 
+/// * `Ok(serde_json::Value)` - The ai_enrichment JSON with tags, summary, provider, enriched_at
+/// * `Err(String)` - Error message if enrichment fails
+async fn enrich_content(
+    provider: &dyn IntelProvider,
+    content: &str,
+) -> Result<serde_json::Value, String> {
+    // Generate tags
+    let tags = provider.generate_tags(content).await?;
+    
+    // Generate summary
+    let summary = provider.summarize(content).await?;
+    
+    // Build ai_enrichment JSON
+    let ai_enrichment = serde_json::json!({
+        "tags": tags,
+        "summary": summary,
+        "provider": "intelligencekit",
+        "enriched_at": chrono::Utc::now().to_rfc3339(),
+    });
+    
+    Ok(ai_enrichment)
 }
 
 /// Save a PageGist as a Gem
@@ -115,11 +152,35 @@ fn page_gist_to_gem(gist: crate::browser::extractors::PageGist) -> Gem {
 pub async fn save_gem(
     gist: crate::browser::extractors::PageGist,
     gem_store: State<'_, Arc<dyn GemStore>>,
+    intel_provider: State<'_, Arc<dyn IntelProvider>>,
 ) -> Result<Gem, String> {
     // Convert PageGist to Gem using the helper function
-    let gem = page_gist_to_gem(gist);
+    let mut gem = page_gist_to_gem(gist);
 
-    // Save via GemStore trait
+    // Check if AI enrichment is available
+    let availability = intel_provider.check_availability().await;
+    
+    if availability.available {
+        // Get content for enrichment (prefer content, fall back to description)
+        let content_to_enrich = gem.content.as_ref()
+            .or(gem.description.as_ref())
+            .filter(|s| !s.trim().is_empty());
+        
+        if let Some(content) = content_to_enrich {
+            // Try to enrich, but don't fail the save if enrichment fails
+            match enrich_content(&**intel_provider, content).await {
+                Ok(ai_enrichment) => {
+                    gem.ai_enrichment = Some(ai_enrichment);
+                }
+                Err(e) => {
+                    // Log error but continue with save
+                    eprintln!("Failed to enrich gem: {}", e);
+                }
+            }
+        }
+    }
+
+    // Save via GemStore trait (with or without enrichment)
     gem_store.save(gem).await
 }
 
@@ -379,6 +440,169 @@ pub async fn get_gem(
     gem_store: State<'_, Arc<dyn GemStore>>,
 ) -> Result<Option<Gem>, String> {
     gem_store.get(&id).await
+}
+
+/// Enrich a gem with AI-generated tags and summary
+///
+/// This command enriches an existing gem by generating tags and a summary
+/// using the IntelProvider. It fetches the gem, enriches it, and saves it back.
+///
+/// # Arguments
+///
+/// * `id` - The unique identifier of the gem to enrich
+/// * `gem_store` - Managed state containing the GemStore trait object
+/// * `intel_provider` - Managed state containing the IntelProvider trait object
+///
+/// # Returns
+///
+/// * `Ok(Gem)` - The enriched gem with ai_enrichment populated
+/// * `Err(String)` - Error message if enrichment fails
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The IntelProvider is not available
+/// - The gem with the specified ID does not exist
+/// - The gem has no content or description to enrich
+/// - The enrichment process fails (tag generation or summarization)
+///
+/// # Examples
+///
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+///
+/// try {
+///   const enrichedGem = await invoke('enrich_gem', {
+///     id: '550e8400-e29b-41d4-a716-446655440000'
+///   });
+///   console.log(`Enriched with ${enrichedGem.ai_enrichment.tags.length} tags`);
+/// } catch (error) {
+///   console.error(`Failed to enrich gem: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn enrich_gem(
+    id: String,
+    gem_store: State<'_, Arc<dyn GemStore>>,
+    intel_provider: State<'_, Arc<dyn IntelProvider>>,
+) -> Result<Gem, String> {
+    // Check availability first
+    let availability = intel_provider.check_availability().await;
+    if !availability.available {
+        return Err(format!(
+            "AI enrichment not available: {}",
+            availability.reason.unwrap_or_else(|| "Unknown reason".to_string())
+        ));
+    }
+    
+    // Fetch gem by ID
+    let mut gem = gem_store.get(&id).await?
+        .ok_or_else(|| format!("Gem with id '{}' not found", id))?;
+    
+    // Get content for enrichment (prefer content, fall back to description)
+    let content_to_enrich = gem.content.as_ref()
+        .or(gem.description.as_ref())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "Gem has no content or description to enrich".to_string())?;
+    
+    // Enrich the content
+    let ai_enrichment = enrich_content(&**intel_provider, content_to_enrich).await?;
+    
+    // Update gem with enrichment
+    gem.ai_enrichment = Some(ai_enrichment);
+    
+    // Save and return
+    gem_store.save(gem).await
+}
+
+/// Check if AI enrichment is available
+///
+/// This command checks whether the IntelProvider is available and ready
+/// to process enrichment requests.
+///
+/// # Arguments
+///
+/// * `intel_provider` - Managed state containing the IntelProvider trait object
+///
+/// # Returns
+///
+/// * `Ok(AvailabilityResult)` - Availability status with optional reason
+/// * `Err(String)` - Never returns an error (always succeeds)
+///
+/// # Examples
+///
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+///
+/// interface AvailabilityResult {
+///   available: boolean;
+///   reason?: string;
+/// }
+///
+/// try {
+///   const status: AvailabilityResult = await invoke('check_intel_availability');
+///   if (status.available) {
+///     console.log('AI enrichment is available');
+///   } else {
+///     console.log(`AI enrichment unavailable: ${status.reason}`);
+///   }
+/// } catch (error) {
+///   console.error(`Failed to check availability: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn check_intel_availability(
+    intel_provider: State<'_, Arc<dyn IntelProvider>>,
+) -> Result<crate::intelligence::AvailabilityResult, String> {
+    Ok(intel_provider.check_availability().await)
+}
+
+/// Filter gems by tag
+///
+/// This command returns gems that have the specified tag in their ai_enrichment.
+/// Results are ordered by captured_at descending (most recent first).
+///
+/// # Arguments
+///
+/// * `tag` - The tag to filter by (exact match)
+/// * `limit` - Optional maximum number of gems to return (default: 50)
+/// * `offset` - Optional number of gems to skip for pagination (default: 0)
+/// * `gem_store` - Managed state containing the GemStore trait object
+///
+/// # Returns
+///
+/// * `Ok(Vec<GemPreview>)` - Array of gem previews with the specified tag
+/// * `Err(String)` - Error message if filtering fails
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The GemStore filter_by_tag operation fails
+/// - Database connection issues occur
+///
+/// # Examples
+///
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+///
+/// try {
+///   const gems = await invoke('filter_gems_by_tag', {
+///     tag: 'rust',
+///     limit: 20
+///   });
+///   console.log(`Found ${gems.length} gems tagged with 'rust'`);
+/// } catch (error) {
+///   console.error(`Failed to filter gems: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn filter_gems_by_tag(
+    tag: String,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    gem_store: State<'_, Arc<dyn GemStore>>,
+) -> Result<Vec<GemPreview>, String> {
+    gem_store.filter_by_tag(&tag, limit.unwrap_or(50), offset.unwrap_or(0)).await
 }
 
 

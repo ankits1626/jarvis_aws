@@ -65,29 +65,6 @@ impl SqliteGemStore {
             [],
         ).map_err(|e| format!("Failed to create gems table: {}", e))?;
         
-        // Migration: Add ai_enrichment column if it doesn't exist
-        let mut stmt = conn.prepare("PRAGMA table_info(gems)")
-            .map_err(|e| format!("Failed to prepare PRAGMA: {}", e))?;
-        let columns: Vec<String> = stmt
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(|e| format!("Failed to query columns: {}", e))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("Failed to collect columns: {}", e))?;
-        
-        if !columns.contains(&"ai_enrichment".to_string()) {
-            // Add the column
-            conn.execute("ALTER TABLE gems ADD COLUMN ai_enrichment TEXT", [])
-                .map_err(|e| format!("Failed to add ai_enrichment column: {}", e))?;
-            
-            // Drop old triggers
-            conn.execute("DROP TRIGGER IF EXISTS gems_ai", [])
-                .map_err(|e| format!("Failed to drop gems_ai trigger: {}", e))?;
-            conn.execute("DROP TRIGGER IF EXISTS gems_ad", [])
-                .map_err(|e| format!("Failed to drop gems_ad trigger: {}", e))?;
-            conn.execute("DROP TRIGGER IF EXISTS gems_au", [])
-                .map_err(|e| format!("Failed to drop gems_au trigger: {}", e))?;
-        }
-        
         // FTS5 virtual table for full-text search
         conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS gems_fts USING fts5(
@@ -100,11 +77,9 @@ impl SqliteGemStore {
             [],
         ).map_err(|e| format!("Failed to create FTS5 table: {}", e))?;
         
-        // Triggers to keep FTS5 in sync (always recreate to ensure they have the latest logic)
-        conn.execute("DROP TRIGGER IF EXISTS gems_ai", [])
-            .map_err(|e| format!("Failed to drop gems_ai trigger: {}", e))?;
+        // Triggers to keep FTS5 in sync
         conn.execute(
-            "CREATE TRIGGER gems_ai AFTER INSERT ON gems BEGIN
+            "CREATE TRIGGER IF NOT EXISTS gems_ai AFTER INSERT ON gems BEGIN
                 INSERT INTO gems_fts(rowid, title, description, content)
                 VALUES (
                     new.rowid,
@@ -116,10 +91,8 @@ impl SqliteGemStore {
             [],
         ).map_err(|e| format!("Failed to create insert trigger: {}", e))?;
         
-        conn.execute("DROP TRIGGER IF EXISTS gems_ad", [])
-            .map_err(|e| format!("Failed to drop gems_ad trigger: {}", e))?;
         conn.execute(
-            "CREATE TRIGGER gems_ad AFTER DELETE ON gems BEGIN
+            "CREATE TRIGGER IF NOT EXISTS gems_ad AFTER DELETE ON gems BEGIN
                 INSERT INTO gems_fts(gems_fts, rowid, title, description, content)
                 VALUES(
                     'delete',
@@ -132,10 +105,8 @@ impl SqliteGemStore {
             [],
         ).map_err(|e| format!("Failed to create delete trigger: {}", e))?;
         
-        conn.execute("DROP TRIGGER IF EXISTS gems_au", [])
-            .map_err(|e| format!("Failed to drop gems_au trigger: {}", e))?;
         conn.execute(
-            "CREATE TRIGGER gems_au AFTER UPDATE ON gems BEGIN
+            "CREATE TRIGGER IF NOT EXISTS gems_au AFTER UPDATE ON gems BEGIN
                 INSERT INTO gems_fts(gems_fts, rowid, title, description, content)
                 VALUES(
                     'delete',
@@ -440,7 +411,7 @@ mod tests {
         
         let expected_columns = vec![
             "id", "source_type", "source_url", "domain", "title",
-            "author", "description", "content", "source_meta", "captured_at", "ai_enrichment"
+            "author", "description", "content", "source_meta", "captured_at"
         ];
         
         assert_eq!(columns, expected_columns, "gems table should have correct columns");
@@ -508,7 +479,6 @@ mod tests {
             content: Some("Original content with unique keyword FIRSTVERSION".to_string()),
             source_meta: serde_json::json!({"version": 1}),
             captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
         };
         
         let saved1 = store.save(gem1.clone()).await
@@ -526,7 +496,6 @@ mod tests {
             content: Some("Updated content with unique keyword SECONDVERSION".to_string()),
             source_meta: serde_json::json!({"version": 2}),
             captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
         };
         
         let saved2 = store.save(gem2.clone()).await
@@ -593,7 +562,6 @@ mod tests {
             content: Some("First content".to_string()),
             source_meta: serde_json::json!({}),
             captured_at: (now - chrono::Duration::hours(2)).to_rfc3339(),
-            ai_enrichment: None,
         };
         
         let gem2 = Gem {
@@ -607,7 +575,6 @@ mod tests {
             content: Some("Second content".to_string()),
             source_meta: serde_json::json!({}),
             captured_at: now.to_rfc3339(),
-            ai_enrichment: None,
         };
         
         let gem3 = Gem {
@@ -621,7 +588,6 @@ mod tests {
             content: Some("Third content".to_string()),
             source_meta: serde_json::json!({}),
             captured_at: (now - chrono::Duration::hours(1)).to_rfc3339(),
-            ai_enrichment: None,
         };
         
         // Save in random order
@@ -657,7 +623,6 @@ mod tests {
                 content: Some(format!("Content {}", i)),
                 source_meta: serde_json::json!({}),
                 captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
             };
             store.save(gem).await.expect("Save should succeed");
         }
@@ -694,7 +659,6 @@ mod tests {
             content: Some(long_content.clone()),
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
         };
         
         store.save(gem).await.expect("Save should succeed");
@@ -732,7 +696,6 @@ mod tests {
             content: Some(short_content.to_string()),
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
         };
         
         store.save(gem).await.expect("Save should succeed");
@@ -766,7 +729,6 @@ mod tests {
             content: Some(utf8_content.clone()),
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
         };
         
         store.save(gem).await.expect("Save should succeed");
@@ -815,7 +777,6 @@ mod tests {
                     content: content.clone(),
                     source_meta: serde_json::json!({"test": "data"}),
                     captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
                 };
                 
                 let saved = store.save(gem.clone()).await.unwrap();
@@ -857,7 +818,6 @@ mod tests {
             content: Some("Rust is a systems programming language".to_string()),
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
         };
         
         let gem2 = Gem {
@@ -871,7 +831,6 @@ mod tests {
             content: Some("Python is a high-level language".to_string()),
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
         };
         
         store.save(gem1.clone()).await.expect("Save gem1");
@@ -900,7 +859,6 @@ mod tests {
             content: Some("Async programming with tokio is powerful".to_string()),
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
         };
         
         store.save(gem.clone()).await.expect("Save gem");
@@ -928,7 +886,6 @@ mod tests {
             content: Some("Security is important".to_string()),
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
         };
         
         store.save(gem.clone()).await.expect("Save gem");
@@ -958,7 +915,6 @@ mod tests {
                 content: Some(format!("Content {}", i)),
                 source_meta: serde_json::json!({}),
                 captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
             };
             store.save(gem).await.expect("Save should succeed");
         }
@@ -987,7 +943,6 @@ mod tests {
             content: Some("Test content".to_string()),
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
         };
         store.save(gem).await.expect("Save should succeed");
         
@@ -1015,7 +970,6 @@ mod tests {
                 content: Some(format!("Content {}", i)),
                 source_meta: serde_json::json!({}),
                 captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
             };
             store.save(gem).await.expect("Save should succeed");
         }
@@ -1042,7 +996,6 @@ mod tests {
             content: Some("Test content".to_string()),
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
         };
         store.save(gem).await.expect("Save should succeed");
         
@@ -1084,7 +1037,6 @@ mod tests {
             content: Some(long_content.clone()),
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
         };
         
         store.save(gem).await.expect("Save should succeed");
@@ -1119,7 +1071,6 @@ mod tests {
             content: Some("Test content".to_string()),
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
         };
         
         let saved = store.save(gem).await.expect("Save should succeed");
@@ -1170,7 +1121,6 @@ mod tests {
             content: Some("Unique content DELETEME".to_string()),
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
-            ai_enrichment: None,
         };
         
         let saved = store.save(gem).await.expect("Save should succeed");

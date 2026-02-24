@@ -20,6 +20,29 @@ This file logs architectural decisions (ADRs) with context and trade-offs.
 
 ## Entries
 
+### ADR-002: IntelligenceKit Sidecar Spawn Approach (2026-02-24)
+
+**Context:**
+- IntelligenceKit needs to communicate via synchronous NDJSON request-response (write command → read one response line)
+- JarvisListen uses `tauri_plugin_shell` with event-based stdout delivery
+- Need to decide whether to follow JarvisListen's pattern or use a different approach
+
+**Decision:**
+- Use `tokio::process::Command` directly for IntelligenceKit (not `tauri_plugin_shell`)
+- Still register IntelligenceKit in `externalBin` for bundling
+- Still use Tauri's `PathResolver` to locate the binary
+
+**Alternatives Considered:**
+- Use `tauri_plugin_shell` like JarvisListen → Rejected: Event-based stdout delivery (`Receiver<CommandEvent>`) makes synchronous request-response awkward. Would require background task routing events into per-request channels, adding complexity and latency.
+- Use `std::process::Command` → Rejected: Need async I/O for non-blocking operations in Tauri commands
+
+**Consequences:**
+- Direct process control enables clean synchronous NDJSON protocol
+- Simpler implementation (no event routing layer)
+- Lower latency (no event queue)
+- Diverges from JarvisListen pattern (but for good reason - different communication requirements)
+- Still benefits from Tauri's binary bundling and path resolution
+
 ### ADR-001: Use Tauri for Desktop App (2026-02-24)
 
 **Context:**
