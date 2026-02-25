@@ -2214,31 +2214,21 @@ h1 {
   gap: 6px;
 }
 
-/* Claude Conversation Capture Button */
-.capture-claude-button {
-  background: #667eea;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  padding: 8px 16px;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
+/* Claude badge on tab rows */
+.claude-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(102, 126, 234, 0.15);
+  color: #667eea;
   white-space: nowrap;
+  letter-spacing: 0.5px;
 }
 
-.capture-claude-button:hover:not(:disabled) {
-  background: #5568d3;
-  transform: translateY(-1px);
-}
-
-.capture-claude-button:active:not(:disabled) {
-  transform: translateY(0);
-}
-
-.capture-claude-button:disabled {
-  background: #95a5a6;
-  cursor: not-allowed;
-  opacity: 0.6;
+.tab-badges {
+  display: flex;
+  gap: 4px;
+  align-items: center;
 }

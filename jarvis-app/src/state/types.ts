@@ -319,6 +319,12 @@ export interface BrowserTab {
   domain: string;
 }
 
+/** Claude panel detection status matching Rust ClaudePanelStatus struct */
+export interface ClaudePanelStatus {
+  detected: boolean;
+  active_tab_url: string | null;
+}
+
 /** Page gist (extracted metadata) matching Rust PageGist struct */
 export interface PageGist {
   url: string;

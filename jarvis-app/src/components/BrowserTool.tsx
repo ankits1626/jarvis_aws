@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { BrowserTab, PageGist, SourceType, Gem, AvailabilityResult } from '../state/types';
+import type { BrowserTab, PageGist, SourceType, Gem, AvailabilityResult, ClaudePanelStatus } from '../state/types';
 
 interface BrowserToolProps {
   onClose: () => void;
@@ -125,9 +125,8 @@ export function BrowserTool({ onClose }: BrowserToolProps) {
   const [gistLoading, setGistLoading] = useState(false);
   const [gistError, setGistError] = useState<string | null>(null);
   
-  // Claude conversation capture state
-  const [claudePermission, setClaudePermission] = useState(false);
-  const [capturingClaude, setCapturingClaude] = useState(false);
+  // Claude panel detection state
+  const [claudeStatus, setClaudeStatus] = useState<ClaudePanelStatus | null>(null);
 
   const fetchTabs = async () => {
     setLoading(true);
@@ -142,23 +141,30 @@ export function BrowserTool({ onClose }: BrowserToolProps) {
     }
   };
 
-  // Check accessibility permission on mount (macOS only)
+  const checkClaudePanel = async () => {
+    try {
+      const status = await invoke<ClaudePanelStatus>('check_claude_panel');
+      setClaudeStatus(status);
+    } catch {
+      setClaudeStatus(null);
+    }
+  };
+
+  // Poll for Claude panel status every 3 seconds
   useEffect(() => {
-    const checkPermission = async () => {
-      try {
-        const hasPermission = await invoke<boolean>('check_accessibility_permission');
-        setClaudePermission(hasPermission);
-      } catch (err) {
-        console.error('Failed to check accessibility permission:', err);
-        setClaudePermission(false);
-      }
-    };
-    checkPermission();
+    checkClaudePanel();
+    const interval = setInterval(checkClaudePanel, 3000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
     fetchTabs();
   }, []);
+
+  const isClaudeOnTab = (tab: BrowserTab): boolean => {
+    if (!claudeStatus?.detected || !claudeStatus.active_tab_url) return false;
+    return tab.url === claudeStatus.active_tab_url;
+  };
 
   const handleTabClick = (index: number) => {
     if (selectedIndex === index) {
@@ -179,11 +185,14 @@ export function BrowserTool({ onClose }: BrowserToolProps) {
     setGistError(null);
 
     try {
-      const result = await invoke<PageGist>('prepare_tab_gist', {
+      const command = isClaudeOnTab(tab)
+        ? 'prepare_tab_gist_with_claude'
+        : 'prepare_tab_gist';
+      const result = await invoke<PageGist>(command, {
         url: tab.url,
         sourceType: tab.source_type,
       });
-      console.log('[BrowserTool] Gist result:', JSON.stringify(result, null, 2));
+      console.log(`[BrowserTool] Gist result (${command}):`, JSON.stringify(result, null, 2));
       setGist(result);
     } catch (err) {
       setGistError(String(err));
@@ -217,23 +226,6 @@ export function BrowserTool({ onClose }: BrowserToolProps) {
     setSelectedIndex(null);
   };
 
-  const handleCaptureClaude = async () => {
-    setCapturingClaude(true);
-    setGistError(null);
-    setGist(null);
-    setSelectedIndex(null);
-
-    try {
-      const result = await invoke<PageGist>('capture_claude_conversation');
-      console.log('[BrowserTool] Claude conversation captured:', JSON.stringify(result, null, 2));
-      setGist(result);
-    } catch (err) {
-      setGistError(String(err));
-    } finally {
-      setCapturingClaude(false);
-    }
-  };
-
   return (
     <div className="settings-panel">
       <div className="settings-header">
@@ -244,14 +236,6 @@ export function BrowserTool({ onClose }: BrowserToolProps) {
         <div className="browser-toolbar">
           <button onClick={fetchTabs} className="refresh-button" disabled={loading}>
             {loading ? 'Loading...' : 'Refresh'}
-          </button>
-          <button 
-            onClick={handleCaptureClaude} 
-            className="capture-claude-button"
-            disabled={!claudePermission || capturingClaude}
-            title={!claudePermission ? 'Accessibility permission required' : 'Capture Claude conversation from side panel'}
-          >
-            {capturingClaude ? 'Capturing...' : 'Capture Claude Conversation'}
           </button>
           <span className="tab-count">{tabs.length} tabs</span>
         </div>
@@ -273,9 +257,14 @@ export function BrowserTool({ onClose }: BrowserToolProps) {
               <div className="tab-item-content">
                 <div className="tab-item-header">
                   <span className="tab-domain">{tab.domain}</span>
-                  <span className={SOURCE_BADGES[tab.source_type].className}>
-                    {SOURCE_BADGES[tab.source_type].label}
-                  </span>
+                  <div className="tab-badges">
+                    {isClaudeOnTab(tab) && (
+                      <span className="claude-badge" title="Claude conversation will be included">Claude</span>
+                    )}
+                    <span className={SOURCE_BADGES[tab.source_type].className}>
+                      {SOURCE_BADGES[tab.source_type].label}
+                    </span>
+                  </div>
                 </div>
                 <div className="tab-title">{tab.title}</div>
               </div>
@@ -287,7 +276,9 @@ export function BrowserTool({ onClose }: BrowserToolProps) {
           <div className="gist-action-bar">
             {!gistLoading && !gistError && (
               <button onClick={handlePrepareGist} className="prepare-gist-button">
-                Prepare Gist
+                {selectedIndex !== null && isClaudeOnTab(tabs[selectedIndex])
+                  ? 'Prepare Gist + Claude'
+                  : 'Prepare Gist'}
               </button>
             )}
             {gistLoading && (

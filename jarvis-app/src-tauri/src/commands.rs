@@ -1716,6 +1716,38 @@ pub async fn prepare_tab_gist(
     crate::browser::extractors::prepare_gist(&url, &st).await
 }
 
+/// Prepare a gist for a browser tab, including the Claude conversation if detected.
+///
+/// Runs the page extractor and Claude extractor concurrently, then merges
+/// both into a single PageGist. If Claude extraction fails, returns page-only gist.
+#[tauri::command]
+pub async fn prepare_tab_gist_with_claude(
+    url: String,
+    source_type: String,
+) -> Result<crate::browser::extractors::PageGist, String> {
+    let st: crate::browser::tabs::SourceType =
+        serde_json::from_str(&format!("\"{}\"", source_type))
+            .unwrap_or(crate::browser::tabs::SourceType::Other);
+
+    let (page_result, claude_result) = tokio::join!(
+        crate::browser::extractors::prepare_gist(&url, &st),
+        crate::browser::extractors::claude_extension::extract()
+    );
+
+    let page_gist = page_result?;
+
+    match claude_result {
+        Ok(claude_gist) => {
+            eprintln!("[MergedGist] Merging page gist with Claude conversation");
+            Ok(crate::browser::extractors::merge_gists(page_gist, claude_gist))
+        }
+        Err(e) => {
+            eprintln!("[MergedGist] Claude extraction failed, returning page-only gist: {}", e);
+            Ok(page_gist)
+        }
+    }
+}
+
 /// Export a gist to a text file in ~/.jarvis/gists/
 ///
 /// Returns the full path to the saved file.
@@ -1836,6 +1868,58 @@ mod tests {
 #[tauri::command]
 pub async fn capture_claude_conversation() -> Result<crate::browser::extractors::PageGist, String> {
     crate::browser::extractors::claude_extension::extract().await
+}
+
+/// Status of the Claude Chrome Extension side panel detection
+#[derive(Debug, Clone, Serialize)]
+pub struct ClaudePanelStatus {
+    pub detected: bool,
+    pub active_tab_url: Option<String>,
+}
+
+/// Check if the Claude Chrome Extension side panel is currently visible
+///
+/// Scans Chrome's accessibility tree for a Claude web area. Returns detection
+/// status along with the active tab URL (so frontend can match to the correct tab row).
+#[tauri::command]
+pub fn check_claude_panel() -> ClaudePanelStatus {
+    #[cfg(target_os = "macos")]
+    {
+        use crate::browser::accessibility::AccessibilityReader;
+
+        let not_detected = ClaudePanelStatus { detected: false, active_tab_url: None };
+
+        if !AccessibilityReader::check_permission() {
+            return not_detected;
+        }
+
+        let pid = match AccessibilityReader::find_chrome_pid() {
+            Ok(pid) => pid,
+            Err(_) => return not_detected,
+        };
+
+        let web_areas = match AccessibilityReader::find_web_areas(pid) {
+            Ok(areas) => areas,
+            Err(_) => return not_detected,
+        };
+
+        let detected = web_areas.iter().any(|wa| {
+            let lower = wa.title.to_lowercase();
+            lower.contains("claude") || lower.contains("anthropic")
+        });
+
+        if detected {
+            let active_tab_url = crate::browser::adapters::chrome::get_active_tab_url_sync().ok();
+            ClaudePanelStatus { detected: true, active_tab_url }
+        } else {
+            not_detected
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        ClaudePanelStatus { detected: false, active_tab_url: None }
+    }
 }
 
 /// Check if accessibility permission is granted

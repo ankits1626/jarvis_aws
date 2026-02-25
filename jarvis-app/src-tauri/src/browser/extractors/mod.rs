@@ -39,6 +39,54 @@ pub async fn prepare_gist(url: &str, source_type: &SourceType) -> Result<PageGis
     }
 }
 
+/// Merge a page/article gist with a Claude conversation gist into a single gist.
+/// The page gist provides primary metadata (url, title, author, dates).
+/// The Claude conversation is appended to the content.
+pub fn merge_gists(page_gist: PageGist, claude_gist: PageGist) -> PageGist {
+    let mut content_parts: Vec<String> = Vec::new();
+
+    if let Some(ref excerpt) = page_gist.content_excerpt {
+        if !excerpt.trim().is_empty() {
+            content_parts.push(format!("--- Page Content ---\n{}", excerpt));
+        }
+    }
+
+    if let Some(ref conversation) = claude_gist.content_excerpt {
+        if !conversation.trim().is_empty() {
+            content_parts.push(format!("--- Claude Conversation ---\n{}", conversation));
+        }
+    }
+
+    let merged_content = if content_parts.is_empty() {
+        None
+    } else {
+        Some(content_parts.join("\n\n"))
+    };
+
+    // Nest extras under page/claude keys to avoid collisions
+    let mut merged_extra = serde_json::Map::new();
+    if !page_gist.extra.is_null() {
+        merged_extra.insert("page".to_string(), page_gist.extra);
+    }
+    if !claude_gist.extra.is_null() {
+        merged_extra.insert("claude".to_string(), claude_gist.extra);
+    }
+    merged_extra.insert("has_claude_conversation".to_string(), serde_json::Value::Bool(true));
+
+    PageGist {
+        url: page_gist.url,
+        title: page_gist.title,
+        source_type: page_gist.source_type,
+        domain: page_gist.domain,
+        author: page_gist.author,
+        description: page_gist.description.or(claude_gist.description),
+        published_date: page_gist.published_date,
+        image_url: page_gist.image_url,
+        content_excerpt: merged_content,
+        extra: serde_json::Value::Object(merged_extra),
+    }
+}
+
 /// Wrap existing YouTube scraper into PageGist format
 async fn youtube_gist(url: &str, domain: &str) -> Result<PageGist, String> {
     let yt = scrape_youtube_gist(url).await?;

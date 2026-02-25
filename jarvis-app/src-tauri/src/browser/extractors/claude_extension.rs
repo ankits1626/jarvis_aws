@@ -8,8 +8,6 @@ use crate::browser::accessibility::{AccessibilityReader, TextBlock, WebArea};
 use super::PageGist;
 use crate::browser::tabs::{extract_domain, SourceType};
 
-#[cfg(target_os = "macos")]
-use std::process::Command;
 
 #[cfg(target_os = "macos")]
 struct ConversationData {
@@ -18,15 +16,27 @@ struct ConversationData {
     first_prompt: String,
 }
 
+/// Check if a web area title looks like the Claude extension side panel
+#[cfg(target_os = "macos")]
+fn is_claude_web_area(title: &str) -> bool {
+    let lower = title.to_lowercase();
+    lower.contains("claude")
+        || lower.contains("anthropic")
+        || lower.contains("side panel")
+}
+
 /// Find the Claude web area from a list of web areas
 #[cfg(target_os = "macos")]
 fn find_claude_web_area(web_areas: &[WebArea]) -> Result<&WebArea, String> {
     web_areas
         .iter()
-        .find(|wa| wa.title.contains("Claude"))
+        .find(|wa| is_claude_web_area(&wa.title))
         .ok_or_else(|| {
-            "No Claude conversation found. Open the Claude Chrome Extension side panel first."
-                .to_string()
+            let titles: Vec<_> = web_areas.iter().map(|wa| wa.title.as_str()).collect();
+            format!(
+                "No Claude conversation found. Open the Claude Chrome Extension side panel first. (Found web areas: {:?})",
+                titles
+            )
         })
 }
 
@@ -40,24 +50,10 @@ fn is_plan_indicator(text: &str) -> bool {
         || lower.contains("extract page text")
 }
 
-/// Get the active tab URL from Chrome using AppleScript
+/// Get the active tab URL from Chrome using shared adapter function
 #[cfg(target_os = "macos")]
-async fn get_active_tab_url() -> Result<String, String> {
-    let script = r#"tell application "Google Chrome" to get URL of active tab of front window"#;
-    
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .map_err(|e| format!("Failed to execute AppleScript: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to get active tab URL: {}", stderr));
-    }
-
-    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok(url)
+fn get_active_tab_url() -> Result<String, String> {
+    crate::browser::adapters::chrome::get_active_tab_url_sync()
 }
 
 /// Check if the current message text ends mid-sentence (not at a sentence/paragraph boundary).
@@ -175,13 +171,7 @@ fn reconstruct_conversation(text_blocks: Vec<TextBlock>) -> Result<ConversationD
         message_count += 1;
     }
 
-    let mut full_text = conversation_parts.join("\n\n");
-
-    // Truncate at 50,000 characters
-    if full_text.len() > 50000 {
-        full_text.truncate(50000);
-        full_text.push_str("\n\n[conversation truncated]");
-    }
+    let full_text = conversation_parts.join("\n\n");
 
     Ok(ConversationData {
         full_text,
@@ -190,14 +180,18 @@ fn reconstruct_conversation(text_blocks: Vec<TextBlock>) -> Result<ConversationD
     })
 }
 
-/// Extract page title from non-Claude web areas
+/// Extract page title from non-Claude web areas, with AppleScript fallback
 #[cfg(target_os = "macos")]
-fn extract_page_title(web_areas: &[WebArea]) -> Result<String, String> {
-    web_areas
-        .iter()
-        .find(|wa| !wa.title.contains("Claude"))
-        .map(|wa| wa.title.clone())
-        .ok_or_else(|| "No active tab found".to_string())
+fn extract_page_title(web_areas: &[WebArea]) -> String {
+    // Try accessibility tree first
+    if let Some(wa) = web_areas.iter().find(|wa| !is_claude_web_area(&wa.title)) {
+        return wa.title.clone();
+    }
+
+    // Fallback: get active tab title via AppleScript
+    eprintln!("[ClaudeExtractor] No non-Claude web area found, using AppleScript fallback for title");
+    crate::browser::adapters::chrome::get_active_tab_title_sync()
+        .unwrap_or_else(|_| "Unknown Page".to_string())
 }
 
 /// Build PageGist from conversation data
@@ -270,6 +264,12 @@ pub async fn extract() -> Result<PageGist, String> {
                 e
             })?;
 
+        // Debug: log all web areas found
+        eprintln!("[ClaudeExtractor] Found {} web areas:", web_areas.len());
+        for (i, wa) in web_areas.iter().enumerate() {
+            eprintln!("[ClaudeExtractor]   [{}] title={:?}", i, wa.title);
+        }
+
         // Find Claude web area
         let claude_web_area = find_claude_web_area(&web_areas)
             .map_err(|e| {
@@ -283,13 +283,13 @@ pub async fn extract() -> Result<PageGist, String> {
                 eprintln!("[ClaudeExtractor] Failed to extract text content: {}", e);
                 e
             })?;
+        eprintln!("[ClaudeExtractor] Extracted {} text blocks", text_blocks.len());
+        if let Some(first) = text_blocks.first() {
+            eprintln!("[ClaudeExtractor]   first block: role={:?} depth={} text={:?}", first.role, first.depth, &first.text[..first.text.len().min(80)]);
+        }
 
-        // Extract page title from non-Claude web areas
-        let page_title = extract_page_title(&web_areas)
-            .map_err(|e| {
-                eprintln!("[ClaudeExtractor] {}", e);
-                e
-            })?;
+        // Extract page title from non-Claude web areas (with fallback)
+        let page_title = extract_page_title(&web_areas);
 
         // Clone the Claude version title
         let claude_version = claude_web_area.title.clone();
@@ -306,7 +306,7 @@ pub async fn extract() -> Result<PageGist, String> {
         })?;
 
     // Get active tab URL using AppleScript (after all non-Send data is dropped)
-    let page_url = get_active_tab_url().await
+    let page_url = get_active_tab_url()
         .map_err(|e| {
             eprintln!("[ClaudeExtractor] Failed to get active tab URL: {}", e);
             e

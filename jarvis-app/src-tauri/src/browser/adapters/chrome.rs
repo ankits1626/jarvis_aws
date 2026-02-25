@@ -187,6 +187,40 @@ impl BrowserAdapter for ChromeAppleScriptAdapter {
     }
 }
 
+/// Get the active tab URL from Chrome's front window using AppleScript
+pub fn get_active_tab_url_sync() -> Result<String, String> {
+    let script = r#"tell application "Google Chrome" to get URL of active tab of front window"#;
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .map_err(|e| format!("Failed to execute AppleScript: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to get active tab URL: {}", stderr));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Get the active tab title from Chrome's front window using AppleScript
+pub fn get_active_tab_title_sync() -> Result<String, String> {
+    let script = r#"tell application "Google Chrome" to get title of active tab of front window"#;
+    let output = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .map_err(|e| format!("Failed to execute AppleScript: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to get active tab title: {}", stderr));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

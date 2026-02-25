@@ -231,7 +231,9 @@ pub fn run() {
             commands::check_intel_availability,
             commands::filter_gems_by_tag,
             commands::capture_claude_conversation,
+            commands::check_claude_panel,
             commands::check_accessibility_permission,
+            commands::prepare_tab_gist_with_claude,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

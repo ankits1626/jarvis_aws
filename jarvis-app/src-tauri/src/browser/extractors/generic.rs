@@ -165,7 +165,6 @@ fn extract_content_excerpt(html: &str) -> Option<String> {
     });
 
     let mut text_parts: Vec<String> = Vec::new();
-    let mut total_len = 0;
 
     for cap in P_REGEX.captures_iter(source) {
         if let Some(content) = cap.get(1) {
@@ -173,11 +172,7 @@ fn extract_content_excerpt(html: &str) -> Option<String> {
             let text = decode_html_entities(text.trim());
             if text.len() > 20 {
                 // Skip very short paragraphs (likely nav items)
-                total_len += text.len();
                 text_parts.push(text);
-                if total_len > 500 {
-                    break;
-                }
             }
         }
     }
@@ -186,17 +181,7 @@ fn extract_content_excerpt(html: &str) -> Option<String> {
         return None;
     }
 
-    let mut excerpt = text_parts.join(" ");
-    if excerpt.len() > 500 {
-        // Truncate at word boundary
-        if let Some(pos) = excerpt[..500].rfind(' ') {
-            excerpt.truncate(pos);
-        } else {
-            excerpt.truncate(500);
-        }
-        excerpt.push_str("...");
-    }
-
+    let excerpt = text_parts.join("\n\n");
     Some(excerpt)
 }
 
