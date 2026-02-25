@@ -1,5 +1,9 @@
 // Browser observation module for detecting and scraping YouTube videos
 
+#[cfg(target_os = "macos")]
+pub mod accessibility;
+#[cfg(all(test, target_os = "macos"))]
+mod accessibility_tests;
 pub mod adapters;
 pub mod extractors;
 pub mod observer;

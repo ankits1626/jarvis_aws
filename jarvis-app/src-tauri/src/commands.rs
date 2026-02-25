@@ -1809,3 +1809,63 @@ mod tests {
         assert!(!filename.contains(".."));
     }
 }
+
+/// Capture Claude conversation from Chrome Extension side panel
+///
+/// This command extracts a conversation from the Claude Chrome Extension
+/// using macOS Accessibility APIs. It returns a PageGist that can be saved
+/// as a gem.
+///
+/// # Returns
+///
+/// * `Ok(PageGist)` - The extracted conversation as a PageGist
+/// * `Err(String)` - Error message if extraction fails
+///
+/// # Errors
+///
+/// * "Accessibility permission not granted" - User needs to grant accessibility permission
+/// * "Chrome is not running" - Chrome must be running with Claude extension open
+/// * "No Claude conversation found" - Claude side panel must be open
+/// * "Claude conversation capture is only available on macOS" - Non-macOS platforms
+///
+/// # Example
+///
+/// ```typescript
+/// const gist = await invoke('capture_claude_conversation');
+/// ```
+#[tauri::command]
+pub async fn capture_claude_conversation() -> Result<crate::browser::extractors::PageGist, String> {
+    crate::browser::extractors::claude_extension::extract().await
+}
+
+/// Check if accessibility permission is granted
+///
+/// This command checks if the app has accessibility permission on macOS,
+/// which is required for capturing Claude conversations. On non-macOS
+/// platforms, this always returns false.
+///
+/// # Returns
+///
+/// * `true` - Accessibility permission is granted (macOS only)
+/// * `false` - Permission not granted or non-macOS platform
+///
+/// # Example
+///
+/// ```typescript
+/// const hasPermission = await invoke('check_accessibility_permission');
+/// if (!hasPermission) {
+///   // Show permission prompt
+/// }
+/// ```
+#[tauri::command]
+pub fn check_accessibility_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        crate::browser::accessibility::AccessibilityReader::check_permission()
+    }
+    
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}

@@ -230,6 +230,8 @@ pub fn run() {
             commands::enrich_gem,
             commands::check_intel_availability,
             commands::filter_gems_by_tag,
+            commands::capture_claude_conversation,
+            commands::check_accessibility_permission,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

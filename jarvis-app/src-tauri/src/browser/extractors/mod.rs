@@ -1,6 +1,7 @@
 // Extractor router — dispatches to the right extractor based on SourceType
 
 pub mod chatgpt;
+pub mod claude_extension;
 pub mod generic;
 pub mod gmail;
 pub mod medium;

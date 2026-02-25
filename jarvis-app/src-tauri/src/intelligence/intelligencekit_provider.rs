@@ -11,6 +11,65 @@ use tokio::sync::Mutex;
 
 use super::provider::{AvailabilityResult, IntelProvider};
 
+/// Max characters per chunk to stay within Apple Foundation Models' 4096-token context window.
+/// Apple's tokenizer averages ~2.5 chars/token. Budget ~3000 tokens for content,
+/// leaving ~1000 tokens for prompt, instructions, and output.
+const MAX_CONTENT_CHARS: usize = 7_000;
+
+/// Snap a byte index down to the nearest valid UTF-8 char boundary.
+fn snap_to_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        return s.len();
+    }
+    let mut i = index;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Split content into chunks at paragraph/line boundaries, each <= max_chars.
+/// All slice boundaries are snapped to valid UTF-8 char boundaries.
+fn split_content(content: &str, max_chars: usize) -> Vec<&str> {
+    if content.len() <= max_chars {
+        return vec![content];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0;
+
+    while start < content.len() {
+        if start + max_chars >= content.len() {
+            chunks.push(&content[start..]);
+            break;
+        }
+
+        let end = snap_to_char_boundary(content, start + max_chars);
+
+        // Try to break at paragraph boundary (double newline) within last 500 chars
+        let search_start = snap_to_char_boundary(content, if end > start + 500 { end - 500 } else { start });
+        let break_pos = content[search_start..end]
+            .rfind("\n\n")
+            .map(|pos| search_start + pos + 2)
+            .or_else(|| {
+                content[search_start..end]
+                    .rfind('\n')
+                    .map(|pos| search_start + pos + 1)
+            })
+            .or_else(|| {
+                content[search_start..end]
+                    .rfind(' ')
+                    .map(|pos| search_start + pos + 1)
+            })
+            .unwrap_or(end);
+
+        chunks.push(&content[start..break_pos]);
+        start = break_pos;
+    }
+
+    chunks
+}
+
 /// NDJSON command structure for IntelligenceKit protocol
 #[derive(Serialize)]
 struct NdjsonCommand {
@@ -112,11 +171,29 @@ impl IntelligenceKitProvider {
         );
         
         let binary_name = format!("binaries/IntelligenceKit-{}", target_triple);
-        
+
         let binary_path = app_handle
             .path()
             .resolve(&binary_name, tauri::path::BaseDirectory::Resource)
             .map_err(|e| format!("Failed to resolve IntelligenceKit binary path: {}", e))?;
+
+        // In dev mode, BaseDirectory::Resource may not point to src-tauri/binaries/.
+        // Fall back to CARGO_MANIFEST_DIR (resolved at compile time to src-tauri/).
+        let binary_path = if binary_path.exists() {
+            binary_path
+        } else {
+            let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join(&binary_name);
+            if dev_path.exists() {
+                eprintln!("IntelligenceKit: Using dev mode path: {:?}", dev_path);
+                dev_path
+            } else {
+                return Err(format!(
+                    "IntelligenceKit binary not found at {:?} or {:?}",
+                    binary_path, dev_path
+                ));
+            }
+        };
 
         // Spawn using tokio::process::Command for direct stdin/stdout access
         let mut child = Command::new(binary_path)
@@ -360,6 +437,28 @@ impl IntelligenceKitProvider {
         Ok(trimmed_tags)
     }
 
+    /// Generate tags with session-expired retry (single chunk, no chunking logic)
+    async fn generate_tags_with_retry(&self, content: &str) -> Result<Vec<String>, String> {
+        match self.generate_tags_internal(content).await {
+            Err(e) if e.contains("session_not_found") => {
+                self.open_session().await?;
+                self.generate_tags_internal(content).await
+            }
+            result => result,
+        }
+    }
+
+    /// Summarize with session-expired retry (single chunk, no chunking logic)
+    async fn summarize_with_retry(&self, content: &str) -> Result<String, String> {
+        match self.summarize_internal(content).await {
+            Err(e) if e.contains("session_not_found") => {
+                self.open_session().await?;
+                self.summarize_internal(content).await
+            }
+            result => result,
+        }
+    }
+
     /// Internal helper for summarize (no retry logic)
     async fn summarize_internal(&self, content: &str) -> Result<String, String> {
         let session_id = self.ensure_session().await?;
@@ -407,26 +506,115 @@ impl IntelProvider for IntelligenceKitProvider {
     }
 
     async fn generate_tags(&self, content: &str) -> Result<Vec<String>, String> {
-        // Try with retry on session_not_found
-        match self.generate_tags_internal(content).await {
-            Err(e) if e.contains("session_not_found") => {
-                // Session expired, re-open and retry once
-                self.open_session().await?;
-                self.generate_tags_internal(content).await
-            }
-            result => result,
+        let chunks = split_content(content, MAX_CONTENT_CHARS);
+
+        if chunks.len() == 1 {
+            return self.generate_tags_with_retry(content).await;
         }
+
+        eprintln!(
+            "IntelligenceKit: Content too large ({} chars), splitting into {} chunks for tag generation",
+            content.len(),
+            chunks.len()
+        );
+
+        let mut all_tags = Vec::new();
+        for (i, chunk) in chunks.iter().enumerate() {
+            // Open fresh session per chunk to avoid context accumulation
+            if let Err(e) = self.open_session().await {
+                eprintln!("IntelligenceKit: Failed to open session for chunk {}: {}", i + 1, e);
+                continue;
+            }
+            match self.generate_tags_with_retry(chunk).await {
+                Ok(tags) => {
+                    eprintln!(
+                        "IntelligenceKit: Chunk {}/{} produced {} tags",
+                        i + 1,
+                        chunks.len(),
+                        tags.len()
+                    );
+                    all_tags.extend(tags);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "IntelligenceKit: Chunk {}/{} failed: {}",
+                        i + 1,
+                        chunks.len(),
+                        e
+                    );
+                }
+            }
+        }
+
+        // Deduplicate (case-insensitive) and take top 5
+        let mut seen = std::collections::HashSet::new();
+        all_tags.retain(|tag| seen.insert(tag.to_lowercase()));
+        all_tags.truncate(5);
+
+        if all_tags.is_empty() {
+            return Err("No tags generated from any content chunk".to_string());
+        }
+
+        Ok(all_tags)
     }
 
     async fn summarize(&self, content: &str) -> Result<String, String> {
-        // Try with retry on session_not_found
-        match self.summarize_internal(content).await {
-            Err(e) if e.contains("session_not_found") => {
-                // Session expired, re-open and retry once
-                self.open_session().await?;
-                self.summarize_internal(content).await
+        let chunks = split_content(content, MAX_CONTENT_CHARS);
+
+        if chunks.len() == 1 {
+            return self.summarize_with_retry(content).await;
+        }
+
+        eprintln!(
+            "IntelligenceKit: Content too large ({} chars), splitting into {} chunks for summarization",
+            content.len(),
+            chunks.len()
+        );
+
+        let mut chunk_summaries = Vec::new();
+        for (i, chunk) in chunks.iter().enumerate() {
+            // Open fresh session per chunk to avoid context accumulation
+            if let Err(e) = self.open_session().await {
+                eprintln!("IntelligenceKit: Failed to open session for chunk {}: {}", i + 1, e);
+                continue;
             }
-            result => result,
+            match self.summarize_with_retry(chunk).await {
+                Ok(summary) => {
+                    eprintln!(
+                        "IntelligenceKit: Chunk {}/{} summarized",
+                        i + 1,
+                        chunks.len()
+                    );
+                    chunk_summaries.push(summary);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "IntelligenceKit: Chunk {}/{} failed: {}",
+                        i + 1,
+                        chunks.len(),
+                        e
+                    );
+                }
+            }
+        }
+
+        if chunk_summaries.is_empty() {
+            return Err("No summaries generated from any content chunk".to_string());
+        }
+
+        if chunk_summaries.len() == 1 {
+            return Ok(chunk_summaries.into_iter().next().unwrap());
+        }
+
+        // Combine chunk summaries into a final summary (fresh session)
+        let _ = self.open_session().await;
+        let combined = chunk_summaries.join("\n");
+        match self.summarize_with_retry(&combined).await {
+            Ok(final_summary) => Ok(final_summary),
+            Err(_) => {
+                // If combining fails, return the first chunk's summary
+                Ok(chunk_summaries.into_iter().next().unwrap())
+            }
         }
     }
 }

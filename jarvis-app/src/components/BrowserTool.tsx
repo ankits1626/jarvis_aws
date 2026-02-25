@@ -124,6 +124,10 @@ export function BrowserTool({ onClose }: BrowserToolProps) {
   const [gist, setGist] = useState<PageGist | null>(null);
   const [gistLoading, setGistLoading] = useState(false);
   const [gistError, setGistError] = useState<string | null>(null);
+  
+  // Claude conversation capture state
+  const [claudePermission, setClaudePermission] = useState(false);
+  const [capturingClaude, setCapturingClaude] = useState(false);
 
   const fetchTabs = async () => {
     setLoading(true);
@@ -137,6 +141,20 @@ export function BrowserTool({ onClose }: BrowserToolProps) {
       setLoading(false);
     }
   };
+
+  // Check accessibility permission on mount (macOS only)
+  useEffect(() => {
+    const checkPermission = async () => {
+      try {
+        const hasPermission = await invoke<boolean>('check_accessibility_permission');
+        setClaudePermission(hasPermission);
+      } catch (err) {
+        console.error('Failed to check accessibility permission:', err);
+        setClaudePermission(false);
+      }
+    };
+    checkPermission();
+  }, []);
 
   useEffect(() => {
     fetchTabs();
@@ -199,6 +217,23 @@ export function BrowserTool({ onClose }: BrowserToolProps) {
     setSelectedIndex(null);
   };
 
+  const handleCaptureClaude = async () => {
+    setCapturingClaude(true);
+    setGistError(null);
+    setGist(null);
+    setSelectedIndex(null);
+
+    try {
+      const result = await invoke<PageGist>('capture_claude_conversation');
+      console.log('[BrowserTool] Claude conversation captured:', JSON.stringify(result, null, 2));
+      setGist(result);
+    } catch (err) {
+      setGistError(String(err));
+    } finally {
+      setCapturingClaude(false);
+    }
+  };
+
   return (
     <div className="settings-panel">
       <div className="settings-header">
@@ -209,6 +244,14 @@ export function BrowserTool({ onClose }: BrowserToolProps) {
         <div className="browser-toolbar">
           <button onClick={fetchTabs} className="refresh-button" disabled={loading}>
             {loading ? 'Loading...' : 'Refresh'}
+          </button>
+          <button 
+            onClick={handleCaptureClaude} 
+            className="capture-claude-button"
+            disabled={!claudePermission || capturingClaude}
+            title={!claudePermission ? 'Accessibility permission required' : 'Capture Claude conversation from side panel'}
+          >
+            {capturingClaude ? 'Capturing...' : 'Capture Claude Conversation'}
           </button>
           <span className="tab-count">{tabs.length} tabs</span>
         </div>

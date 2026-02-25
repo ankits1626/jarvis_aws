@@ -44,6 +44,10 @@ regex = "1"
 async-trait = "0.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.9"
+core-graphics = "0.23"
+
 [dev-dependencies]
 proptest = "1"
 tempfile = "3"

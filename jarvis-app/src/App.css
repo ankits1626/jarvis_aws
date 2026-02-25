@@ -2213,3 +2213,32 @@ h1 {
   align-items: center;
   gap: 6px;
 }
+
+/* Claude Conversation Capture Button */
+.capture-claude-button {
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.capture-claude-button:hover:not(:disabled) {
+  background: #5568d3;
+  transform: translateY(-1px);
+}
+
+.capture-claude-button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.capture-claude-button:disabled {
+  background: #95a5a6;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
