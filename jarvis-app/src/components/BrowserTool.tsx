@@ -6,6 +6,24 @@ interface BrowserToolProps {
   onClose: () => void;
 }
 
+/** Compare two URLs by page identity, ignoring volatile query params like t=, si=, feature=.
+ *  For YouTube, matches on origin + pathname + video ID (v=).
+ *  For other sites, matches on origin + pathname. */
+function urlsSamePage(a: string, b: string): boolean {
+  try {
+    const ua = new URL(a);
+    const ub = new URL(b);
+    if (ua.origin !== ub.origin || ua.pathname !== ub.pathname) return false;
+    // For YouTube watch pages, the video ID (v=) is the page identity
+    if (ua.hostname.includes('youtube.com') && ua.pathname === '/watch') {
+      return ua.searchParams.get('v') === ub.searchParams.get('v');
+    }
+    return true;
+  } catch {
+    return a === b;
+  }
+}
+
 const SOURCE_BADGES: Record<SourceType, { label: string; className: string }> = {
   YouTube: { label: 'YT', className: 'source-badge youtube' },
   Article: { label: 'Article', className: 'source-badge article' },
@@ -163,7 +181,9 @@ export function BrowserTool({ onClose }: BrowserToolProps) {
 
   const isClaudeOnTab = (tab: BrowserTab): boolean => {
     if (!claudeStatus?.detected || !claudeStatus.active_tab_url) return false;
-    return tab.url === claudeStatus.active_tab_url;
+    // Compare page identity, not exact URL — YouTube and other sites
+    // dynamically update query params (t=, si=, feature=, etc.)
+    return urlsSamePage(tab.url, claudeStatus.active_tab_url);
   };
 
   const handleTabClick = (index: number) => {
@@ -239,6 +259,14 @@ export function BrowserTool({ onClose }: BrowserToolProps) {
           </button>
           <span className="tab-count">{tabs.length} tabs</span>
         </div>
+
+        {claudeStatus?.needs_accessibility && (
+          <div className="accessibility-notice">
+            Claude extension detection requires Accessibility permission.
+            <br />
+            System Settings → Privacy & Security → Accessibility → Enable JarvisApp
+          </div>
+        )}
 
         {error && (
           <div className="error-state">{error}</div>

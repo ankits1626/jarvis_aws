@@ -1875,6 +1875,7 @@ pub async fn capture_claude_conversation() -> Result<crate::browser::extractors:
 pub struct ClaudePanelStatus {
     pub detected: bool,
     pub active_tab_url: Option<String>,
+    pub needs_accessibility: bool,
 }
 
 /// Check if the Claude Chrome Extension side panel is currently visible
@@ -1887,10 +1888,10 @@ pub fn check_claude_panel() -> ClaudePanelStatus {
     {
         use crate::browser::accessibility::AccessibilityReader;
 
-        let not_detected = ClaudePanelStatus { detected: false, active_tab_url: None };
+        let not_detected = ClaudePanelStatus { detected: false, active_tab_url: None, needs_accessibility: false };
 
         if !AccessibilityReader::check_permission() {
-            return not_detected;
+            return ClaudePanelStatus { detected: false, active_tab_url: None, needs_accessibility: true };
         }
 
         let pid = match AccessibilityReader::find_chrome_pid() {
@@ -1905,12 +1906,13 @@ pub fn check_claude_panel() -> ClaudePanelStatus {
 
         let detected = web_areas.iter().any(|wa| {
             let lower = wa.title.to_lowercase();
-            lower.contains("claude") || lower.contains("anthropic")
+            lower.contains("claude") || lower.contains("anthropic") || lower.contains("side panel")
         });
 
         if detected {
             let active_tab_url = crate::browser::adapters::chrome::get_active_tab_url_sync().ok();
-            ClaudePanelStatus { detected: true, active_tab_url }
+            eprintln!("[ClaudePanel] Detected. Active tab URL: {:?}", active_tab_url);
+            ClaudePanelStatus { detected: true, active_tab_url, needs_accessibility: false }
         } else {
             not_detected
         }
@@ -1918,7 +1920,7 @@ pub fn check_claude_panel() -> ClaudePanelStatus {
 
     #[cfg(not(target_os = "macos"))]
     {
-        ClaudePanelStatus { detected: false, active_tab_url: None }
+        ClaudePanelStatus { detected: false, active_tab_url: None, needs_accessibility: false }
     }
 }
 

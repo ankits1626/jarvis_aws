@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use std::sync::Arc;
-use tauri::Manager;
+
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
@@ -123,77 +123,59 @@ pub struct IntelligenceKitProvider {
 }
 
 impl IntelligenceKitProvider {
-    /// Create a new provider and spawn the sidecar using tokio::process::Command
-    /// 
-    /// # Binary Naming Convention
-    /// 
-    /// Tauri's externalBin requires binaries to be named with target-triple suffix:
-    /// - macOS ARM64: `IntelligenceKit-aarch64-apple-darwin`
-    /// - macOS Intel: `IntelligenceKit-x86_64-apple-darwin`
-    /// - Linux: `IntelligenceKit-x86_64-unknown-linux-gnu`
-    /// - Windows: `IntelligenceKit-x86_64-pc-windows-msvc`
-    /// 
-    /// In dev mode, place the binary in: `src-tauri/binaries/IntelligenceKit-<target-triple>`
-    /// In production, Tauri bundles it automatically with the correct suffix.
-    /// 
-    /// Note: Tauri uses "apple" not "macos" in the target triple (std::env::consts::OS returns "macos").
-    /// 
-    /// This differs from tauri_plugin_shell::sidecar() which handles suffix resolution
-    /// automatically, but we use tokio::process::Command directly for synchronous
-    /// request-response communication.
-    pub async fn new(app_handle: tauri::AppHandle) -> Result<Self, String> {
-        // Resolve binary path with target-triple suffix (required by Tauri's externalBin)
-        // Dev mode: src-tauri/binaries/IntelligenceKit-aarch64-apple-darwin
-        // Production: Binary is bundled with the platform suffix
-        
-        // Tauri uses "apple" not "macos" in the target triple
-        let os_part = if cfg!(target_os = "macos") {
-            "apple"
-        } else if cfg!(target_os = "linux") {
-            "unknown-linux"
-        } else if cfg!(target_os = "windows") {
-            "pc-windows"
-        } else {
-            std::env::consts::OS
-        };
-        
+    /// Resolve the IntelligenceKit binary path.
+    ///
+    /// Production (bundled .app): Tauri places externalBin at Contents/MacOS/<name>
+    /// (no target-triple suffix, no binaries/ prefix). We find it next to the main executable.
+    ///
+    /// Dev mode: Binary is at src-tauri/binaries/IntelligenceKit-<target-triple>.
+    fn resolve_binary_path() -> Result<std::path::PathBuf, String> {
+        // Production: look next to the running executable (Contents/MacOS/)
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                let prod_path = exe_dir.join("IntelligenceKit");
+                if prod_path.exists() {
+                    eprintln!("IntelligenceKit: Using bundled binary at {:?}", prod_path);
+                    return Ok(prod_path);
+                }
+            }
+        }
+
+        // Dev mode: CARGO_MANIFEST_DIR/binaries/IntelligenceKit-<target-triple>
         let target_triple = format!(
             "{}-{}-{}",
             std::env::consts::ARCH,
-            os_part,
-            if cfg!(target_os = "macos") {
-                "darwin"
-            } else if cfg!(target_os = "windows") {
-                "msvc"
-            } else {
-                "gnu"
-            }
+            if cfg!(target_os = "macos") { "apple" }
+            else if cfg!(target_os = "linux") { "unknown-linux" }
+            else if cfg!(target_os = "windows") { "pc-windows" }
+            else { std::env::consts::OS },
+            if cfg!(target_os = "macos") { "darwin" }
+            else if cfg!(target_os = "windows") { "msvc" }
+            else { "gnu" }
         );
-        
-        let binary_name = format!("binaries/IntelligenceKit-{}", target_triple);
 
-        let binary_path = app_handle
-            .path()
-            .resolve(&binary_name, tauri::path::BaseDirectory::Resource)
-            .map_err(|e| format!("Failed to resolve IntelligenceKit binary path: {}", e))?;
+        let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("binaries/IntelligenceKit-{}", target_triple));
+        if dev_path.exists() {
+            eprintln!("IntelligenceKit: Using dev mode path: {:?}", dev_path);
+            return Ok(dev_path);
+        }
 
-        // In dev mode, BaseDirectory::Resource may not point to src-tauri/binaries/.
-        // Fall back to CARGO_MANIFEST_DIR (resolved at compile time to src-tauri/).
-        let binary_path = if binary_path.exists() {
-            binary_path
-        } else {
-            let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join(&binary_name);
-            if dev_path.exists() {
-                eprintln!("IntelligenceKit: Using dev mode path: {:?}", dev_path);
-                dev_path
-            } else {
-                return Err(format!(
-                    "IntelligenceKit binary not found at {:?} or {:?}",
-                    binary_path, dev_path
-                ));
-            }
-        };
+        Err(format!(
+            "IntelligenceKit binary not found. Checked:\n  - next to executable\n  - {:?}",
+            dev_path
+        ))
+    }
+
+    /// Create a new provider and spawn the sidecar using tokio::process::Command
+    pub async fn new(app_handle: tauri::AppHandle) -> Result<Self, String> {
+        // Resolve IntelligenceKit binary path.
+        //
+        // Production: Tauri bundles externalBin into Contents/MacOS/ (no target triple suffix).
+        // Dev mode: Binary lives at src-tauri/binaries/IntelligenceKit-<target-triple>.
+        let _ = &app_handle; // used for future resolution if needed
+
+        let binary_path = Self::resolve_binary_path()?;
 
         // Spawn using tokio::process::Command for direct stdin/stdout access
         let mut child = Command::new(binary_path)

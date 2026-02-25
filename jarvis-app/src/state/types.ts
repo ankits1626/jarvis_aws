@@ -323,6 +323,7 @@ export interface BrowserTab {
 export interface ClaudePanelStatus {
   detected: boolean;
   active_tab_url: string | null;
+  needs_accessibility: boolean;
 }
 
 /** Page gist (extracted metadata) matching Rust PageGist struct */

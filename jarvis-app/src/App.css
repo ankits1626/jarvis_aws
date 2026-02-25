@@ -2232,3 +2232,15 @@ h1 {
   gap: 4px;
   align-items: center;
 }
+
+/* Accessibility permission notice */
+.accessibility-notice {
+  font-size: 12px;
+  padding: 8px 12px;
+  margin: 0 0 8px 0;
+  border-radius: 6px;
+  background: rgba(251, 191, 36, 0.1);
+  color: #b45309;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  line-height: 1.5;
+}
