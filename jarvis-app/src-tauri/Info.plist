@@ -6,5 +6,7 @@
 	<string>JarvisApp needs microphone access to capture your voice during recordings.</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>JarvisApp needs screen recording permission to capture system audio.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>JarvisApp needs to communicate with your browser to list tabs, extract page content, and detect the Claude extension.</string>
 </dict>
 </plist>

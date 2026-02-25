@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Microphone access for voice recording -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<!-- Allow AppleScript to control Chrome (list tabs, execute JS, get URLs) -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+	<!-- Allow loading bundled unsigned dylibs (libvosk.dylib) -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+	<!-- Allow JIT for whisper inference (if needed by whisper-rs) -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+</dict>
+</plist>
