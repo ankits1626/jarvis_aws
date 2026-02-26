@@ -54,11 +54,15 @@ function GemCard({
     setEnrichError(null);
     try {
       const enrichedGem = await invoke<Gem>('enrich_gem', { id: localGem.id });
-      // Update local state with new tags and summary
+      // Update local state with new tags, summary, and enrichment source
+      const provider = enrichedGem.ai_enrichment?.provider;
+      const model = enrichedGem.ai_enrichment?.model;
+      const source = provider && model ? `${provider} / ${model}` : provider || null;
       setLocalGem({
         ...localGem,
         tags: enrichedGem.ai_enrichment?.tags || null,
         summary: enrichedGem.ai_enrichment?.summary || null,
+        enrichment_source: source,
       });
       // Also update fullGem if it's cached
       if (fullGem) {
@@ -185,7 +189,13 @@ function GemCard({
       {localGem.summary && (
         <div className="gem-summary">{localGem.summary}</div>
       )}
-      
+
+      {localGem.enrichment_source && (localGem.tags || localGem.summary) && (
+        <div className="gem-enrichment-source">
+          Enriched by: {localGem.enrichment_source}
+        </div>
+      )}
+
       {!expanded && gem.content_preview && (
         <div className="gem-preview">{gem.content_preview}</div>
       )}
@@ -230,6 +240,15 @@ function GemCard({
             title={localGem.tags ? 'Re-enrich with AI' : 'Enrich with AI'}
           >
             {enriching ? '...' : localGem.tags ? '🔄' : '✨'}
+          </button>
+        )}
+        {!aiAvailable && (
+          <button
+            className="gem-enrich-button"
+            disabled
+            title="AI enrichment unavailable. Check Settings to configure an intelligence provider."
+          >
+            ✨
           </button>
         )}
         {confirmDelete ? (
@@ -377,6 +396,20 @@ export function GemsPanel({ onClose }: GemsPanelProps) {
         <button onClick={onClose} className="close-button">×</button>
       </div>
       <div className="settings-content">
+        {aiAvailability && !aiAvailability.available && (
+          <div className="info-banner" style={{ 
+            padding: '12px', 
+            marginBottom: '16px', 
+            backgroundColor: '#fff3cd', 
+            border: '1px solid #ffc107',
+            borderRadius: '4px',
+            color: '#856404'
+          }}>
+            <strong>AI enrichment unavailable:</strong> {aiAvailability.reason || 'Unknown reason'}
+            <br />
+            <small>Configure an intelligence provider in Settings to enable AI-powered tags and summaries.</small>
+          </div>
+        )}
         <div className="gems-search">
           <input
             type="search"

@@ -1,0 +1,27 @@
+I've organized the tasks into 8 logical phases for incremental development:
+
+Phase 1: Python MLX Sidecar (Foundation)
+
+Task 1: Build the Python sidecar with NDJSON protocol and all 7 commands
+Phase 2: Model Management (LlmModelManager)
+
+Task 2: Create the Rust model manager for catalog, downloads, and lifecycle
+Phase 3: MlxProvider Implementation
+
+Task 3: Implement the MlxProvider with IntelProvider trait, content chunking, and model switching
+Phase 4: Provider Selection & Settings
+
+Tasks 4-5: Provider fallback chain and IntelligenceSettings integration
+Phase 5: Backend Commands & Checkpoint
+
+Tasks 6-7: Tauri commands for model management, backend testing checkpoint
+Phase 6: Frontend UI
+
+Task 8: Settings UI with model list, download progress, and controls
+Phase 7: Error Handling & Robustness
+
+Task 9: Graceful degradation, error handling, and property tests
+Phase 8: Integration Testing & Final Validation
+
+Tasks 10-11: End-to-end testing and final checkpoint
+This phased approach allows you to build and test incrementally, with each phase producing a working artifact before moving to the next.

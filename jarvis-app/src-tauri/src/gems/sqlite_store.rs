@@ -186,22 +186,31 @@ impl SqliteGemStore {
     }
     
     fn gem_to_preview(gem: &Gem) -> GemPreview {
-        // Extract tags and summary from ai_enrichment JSON
-        let (tags, summary) = if let Some(ai_enrichment) = &gem.ai_enrichment {
+        // Extract tags, summary, and enrichment source from ai_enrichment JSON
+        let (tags, summary, enrichment_source) = if let Some(ai_enrichment) = &gem.ai_enrichment {
             let tags = ai_enrichment
                 .get("tags")
                 .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok());
-            
+
             let summary = ai_enrichment
                 .get("summary")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            
-            (tags, summary)
+
+            // Build enrichment source string from provider + model
+            let provider = ai_enrichment.get("provider").and_then(|v| v.as_str());
+            let model = ai_enrichment.get("model").and_then(|v| v.as_str());
+            let source = match (provider, model) {
+                (Some(p), Some(m)) => Some(format!("{} / {}", p, m)),
+                (Some(p), None) => Some(p.to_string()),
+                _ => None,
+            };
+
+            (tags, summary, source)
         } else {
-            (None, None)
+            (None, None, None)
         };
-        
+
         GemPreview {
             id: gem.id.clone(),
             source_type: gem.source_type.clone(),
@@ -221,6 +230,7 @@ impl SqliteGemStore {
             captured_at: gem.captured_at.clone(),
             tags,
             summary,
+            enrichment_source,
         }
     }
 }

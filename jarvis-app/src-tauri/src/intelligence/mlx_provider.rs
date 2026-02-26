@@ -1,0 +1,539 @@
+// MlxProvider - manages MLX sidecar process and NDJSON communication
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::Arc;
+
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::process::{Child, Command};
+use tokio::sync::Mutex;
+
+use super::provider::{AvailabilityResult, IntelProvider};
+use super::utils::split_content;
+
+/// Max characters per chunk for MLX models (15,000 chars ~= 6,000 tokens)
+const MAX_CONTENT_CHARS: usize = 15_000;
+
+/// NDJSON command structure for MLX sidecar protocol
+#[derive(Serialize)]
+struct NdjsonCommand {
+    command: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repo_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    destination: Option<String>,
+}
+
+/// NDJSON response structure from MLX sidecar
+#[derive(Deserialize, Debug)]
+struct NdjsonResponse {
+    #[serde(rename = "type")]
+    response_type: String,
+    #[serde(default)]
+    _command: Option<String>,
+    #[serde(default)]
+    available: Option<bool>,
+    #[serde(default)]
+    success: Option<bool>,
+    #[serde(default)]
+    model_name: Option<String>,
+    #[serde(default)]
+    tags: Option<Vec<String>>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    _param_count: Option<u64>,
+}
+
+/// MLX provider state
+struct ProviderState {
+    /// Child process handle
+    child: Option<Child>,
+    /// Current model name
+    model_name: Option<String>,
+    /// Cached availability result
+    availability: AvailabilityResult,
+    /// Stdin writer (buffered for efficiency)
+    stdin: Option<BufWriter<tokio::process::ChildStdin>>,
+    /// Stdout reader (buffered for line reading)
+    stdout: Option<BufReader<tokio::process::ChildStdout>>,
+}
+
+/// MLX provider - manages sidecar lifecycle and NDJSON communication
+pub struct MlxProvider {
+    /// Shared state protected by mutex (only one command in-flight at a time)
+    state: Arc<Mutex<ProviderState>>,
+}
+
+impl MlxProvider {
+    /// Resolve the MLX sidecar script path.
+    ///
+    /// Production (bundled .app): Tauri places resources at Contents/Resources/
+    /// Dev mode: Script is at src-tauri/sidecars/mlx-server/server.py
+    fn resolve_sidecar_path() -> Result<PathBuf, String> {
+        // Production: look in Resources directory
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                // Contents/MacOS/ -> Contents/Resources/
+                if let Some(contents_dir) = exe_dir.parent() {
+                    let prod_path = contents_dir
+                        .join("Resources/sidecars/mlx-server/server.py");
+                    if prod_path.exists() {
+                        eprintln!("MLX: Using bundled script at {:?}", prod_path);
+                        return Ok(prod_path);
+                    }
+                }
+            }
+        }
+
+        // Dev mode: CARGO_MANIFEST_DIR/sidecars/mlx-server/server.py
+        let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("sidecars/mlx-server/server.py");
+        if dev_path.exists() {
+            eprintln!("MLX: Using dev mode path: {:?}", dev_path);
+            return Ok(dev_path);
+        }
+
+        Err(format!(
+            "MLX sidecar script not found. Checked:\n  - Contents/Resources/sidecars/mlx-server/server.py\n  - {:?}",
+            dev_path
+        ))
+    }
+
+    /// Check if Python is installed and accessible
+    async fn check_python_installed(python_path: &str) -> Result<(), String> {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+        let output = Command::new(python_path)
+            .arg("--version")
+            .current_dir(&home)
+            .output()
+            .await
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    format!("Python not found at '{}'. Please install Python 3.10+ or update the python_path in settings.", python_path)
+                } else {
+                    format!("Failed to check Python version: {}", e)
+                }
+            })?;
+
+        if !output.status.success() {
+            return Err(format!("Python check failed: {}", String::from_utf8_lossy(&output.stderr)));
+        }
+
+        eprintln!("MLX: Python found: {}", String::from_utf8_lossy(&output.stdout).trim());
+        Ok(())
+    }
+
+    /// Create a new provider and spawn the sidecar
+    pub async fn new(
+        _app_handle: tauri::AppHandle,
+        model_path: PathBuf,
+        python_path: String,
+    ) -> Result<Self, String> {
+        // Check if Python is installed before attempting to spawn sidecar
+        Self::check_python_installed(&python_path).await?;
+
+        let sidecar_path = Self::resolve_sidecar_path()?;
+
+        // Spawn Python sidecar using tokio::process::Command
+        // Set current_dir to home to avoid inheriting a stale/deleted cwd from the parent process
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+        let mut child = Command::new(&python_path)
+            .arg(&sidecar_path)
+            .current_dir(&home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                format!("Failed to spawn MLX sidecar (Python found but spawn failed): {}", e)
+            })?;
+
+        // Take ownership of stdio handles
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or("Failed to get stdin handle")?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or("Failed to get stdout handle")?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or("Failed to get stderr handle")?;
+
+        // Spawn stderr monitoring task
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr);
+            let mut line = String::new();
+            while let Ok(n) = reader.read_line(&mut line).await {
+                if n == 0 {
+                    break;
+                }
+                eprint!("[MLX] {}", line);
+                line.clear();
+            }
+        });
+
+        let state = ProviderState {
+            child: Some(child),
+            model_name: None,
+            availability: AvailabilityResult {
+                available: false,
+                reason: None,
+            },
+            stdin: Some(BufWriter::new(stdin)),
+            stdout: Some(BufReader::new(stdout)),
+        };
+
+        let provider = Self {
+            state: Arc::new(Mutex::new(state)),
+        };
+
+        // Check availability with 15s timeout (allows for model loading)
+        let availability = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            provider.check_availability_internal(),
+        )
+        .await
+        .map_err(|_| "MLX availability check timeout (15s). The sidecar may be unresponsive.".to_string())??;
+
+        {
+            let mut state = provider.state.lock().await;
+            state.availability = availability.clone();
+        }
+
+        if !availability.available {
+            let reason = availability.reason.unwrap_or_else(|| "Unknown reason".to_string());
+            // Provide helpful error messages based on the reason
+            if reason.contains("mlx") || reason.contains("import") {
+                return Err(format!(
+                    "MLX dependencies not installed: {}. Please install mlx and mlx-lm: pip install mlx mlx-lm",
+                    reason
+                ));
+            } else {
+                return Err(format!("MLX not available: {}", reason));
+            }
+        }
+
+        // Load the model with 15s timeout
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            provider.load_model_internal(model_path),
+        )
+        .await
+        .map_err(|_| "MLX model load timeout (15s)".to_string())??;
+
+        Ok(provider)
+    }
+
+    /// Send a command and receive a response (with 60s timeout for inference)
+    async fn send_command(&self, cmd: NdjsonCommand) -> Result<NdjsonResponse, String> {
+        let mut state = self.state.lock().await;
+
+        // Serialize command to JSON + newline
+        let json = serde_json::to_string(&cmd)
+            .map_err(|e| format!("Failed to serialize command: {}", e))?;
+
+        // Write to stdin with 60s timeout
+        {
+            let stdin = state.stdin.as_mut().ok_or("Stdin not available")?;
+            let write_future = async {
+                stdin.write_all(json.as_bytes()).await?;
+                stdin.write_all(b"\n").await?;
+                stdin.flush().await?;
+                Ok::<_, std::io::Error>(())
+            };
+
+            tokio::time::timeout(std::time::Duration::from_secs(60), write_future)
+                .await
+                .map_err(|_| "Command write timeout".to_string())?
+                .map_err(|e| format!("Failed to write command: {}", e))?;
+        }
+
+        // Read one line from stdout with 60s timeout
+        let mut response_line = String::new();
+        {
+            let stdout = state.stdout.as_mut().ok_or("Stdout not available")?;
+            let read_future = stdout.read_line(&mut response_line);
+
+            tokio::time::timeout(std::time::Duration::from_secs(60), read_future)
+                .await
+                .map_err(|_| "Command read timeout".to_string())?
+                .map_err(|e| format!("Failed to read response: {}", e))?;
+        }
+
+        if response_line.is_empty() {
+            return Err("Sidecar closed connection (broken pipe)".to_string());
+        }
+
+        // Deserialize response
+        serde_json::from_str(&response_line)
+            .map_err(|e| format!("Failed to parse response: {}", e))
+    }
+
+    /// Internal availability check (sends check-availability command)
+    async fn check_availability_internal(&self) -> Result<AvailabilityResult, String> {
+        let cmd = NdjsonCommand {
+            command: "check-availability".to_string(),
+            model_path: None,
+            content: None,
+            repo_id: None,
+            destination: None,
+        };
+
+        let response = self.send_command(cmd).await?;
+
+        if response.response_type == "error" {
+            return Ok(AvailabilityResult {
+                available: false,
+                reason: response.error,
+            });
+        }
+
+        Ok(AvailabilityResult {
+            available: response.available.unwrap_or(false),
+            reason: None,
+        })
+    }
+
+    /// Load a model from disk
+    async fn load_model_internal(&self, model_path: PathBuf) -> Result<(), String> {
+        let cmd = NdjsonCommand {
+            command: "load-model".to_string(),
+            model_path: Some(model_path.to_string_lossy().to_string()),
+            content: None,
+            repo_id: None,
+            destination: None,
+        };
+
+        let response = self.send_command(cmd).await?;
+
+        if response.response_type == "error" {
+            return Err(response
+                .error
+                .unwrap_or_else(|| "Failed to load model".to_string()));
+        }
+
+        if !response.success.unwrap_or(false) {
+            return Err("Model load failed".to_string());
+        }
+
+        // Update state with model name
+        {
+            let mut state = self.state.lock().await;
+            state.model_name = response.model_name;
+        }
+
+        Ok(())
+    }
+
+    /// Switch to a different model
+    pub async fn switch_model(&self, model_path: PathBuf) -> Result<(), String> {
+        // Save previous model name in case we need to rollback
+        let previous_model = {
+            let state = self.state.lock().await;
+            state.model_name.clone()
+        };
+
+        match self.load_model_internal(model_path).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // Restore previous model name on failure
+                let mut state = self.state.lock().await;
+                state.model_name = previous_model;
+                Err(e)
+            }
+        }
+    }
+
+    /// Shutdown the sidecar gracefully
+    pub async fn shutdown(&self) {
+        let cmd = NdjsonCommand {
+            command: "shutdown".to_string(),
+            model_path: None,
+            content: None,
+            repo_id: None,
+            destination: None,
+        };
+
+        // Try to send shutdown command (ignore errors)
+        let _ = self.send_command(cmd).await;
+
+        // Wait up to 3 seconds for graceful exit
+        let mut state = self.state.lock().await;
+        if let Some(mut child) = state.child.take() {
+            let wait_future = child.wait();
+            if tokio::time::timeout(std::time::Duration::from_secs(3), wait_future)
+                .await
+                .is_err()
+            {
+                // Timeout - send SIGTERM
+                let _ = child.kill().await;
+            }
+        }
+    }
+
+    /// Generate tags for a single chunk
+    async fn generate_tags_chunk(&self, content: &str) -> Result<Vec<String>, String> {
+        let cmd = NdjsonCommand {
+            command: "generate-tags".to_string(),
+            model_path: None,
+            content: Some(content.to_string()),
+            repo_id: None,
+            destination: None,
+        };
+
+        let response = self.send_command(cmd).await?;
+
+        if response.response_type == "error" {
+            return Err(response
+                .error
+                .unwrap_or_else(|| "Tag generation failed".to_string()));
+        }
+
+        let tags = response
+            .tags
+            .ok_or_else(|| "No tags in response".to_string())?;
+
+        if tags.is_empty() {
+            return Err("Model returned no tags".to_string());
+        }
+
+        Ok(tags)
+    }
+
+    /// Summarize a single chunk
+    async fn summarize_chunk(&self, content: &str) -> Result<String, String> {
+        let cmd = NdjsonCommand {
+            command: "summarize".to_string(),
+            model_path: None,
+            content: Some(content.to_string()),
+            repo_id: None,
+            destination: None,
+        };
+
+        let response = self.send_command(cmd).await?;
+
+        if response.response_type == "error" {
+            return Err(response
+                .error
+                .unwrap_or_else(|| "Summarization failed".to_string()));
+        }
+
+        let summary = response
+            .summary
+            .ok_or_else(|| "No summary in response".to_string())?;
+
+        if summary.is_empty() {
+            return Err("Model returned empty summary".to_string());
+        }
+
+        Ok(summary)
+    }
+}
+
+#[async_trait]
+impl IntelProvider for MlxProvider {
+    async fn check_availability(&self) -> AvailabilityResult {
+        let state = self.state.lock().await;
+        state.availability.clone()
+    }
+
+    async fn generate_tags(&self, content: &str) -> Result<Vec<String>, String> {
+        let chunks = split_content(content, MAX_CONTENT_CHARS);
+
+        if chunks.len() == 1 {
+            return self.generate_tags_chunk(content).await;
+        }
+
+        eprintln!(
+            "MLX: Content too large ({} chars), splitting into {} chunks for tag generation",
+            content.len(),
+            chunks.len()
+        );
+
+        let mut all_tags = Vec::new();
+        for (i, chunk) in chunks.iter().enumerate() {
+            match self.generate_tags_chunk(chunk).await {
+                Ok(tags) => {
+                    eprintln!(
+                        "MLX: Chunk {}/{} produced {} tags",
+                        i + 1,
+                        chunks.len(),
+                        tags.len()
+                    );
+                    all_tags.extend(tags);
+                }
+                Err(e) => {
+                    eprintln!("MLX: Chunk {}/{} failed: {}", i + 1, chunks.len(), e);
+                }
+            }
+        }
+
+        // Deduplicate (case-insensitive) and take top 5
+        let mut seen = std::collections::HashSet::new();
+        all_tags.retain(|tag| seen.insert(tag.to_lowercase()));
+        all_tags.truncate(5);
+
+        if all_tags.is_empty() {
+            return Err("No tags generated from any content chunk".to_string());
+        }
+
+        Ok(all_tags)
+    }
+
+    async fn summarize(&self, content: &str) -> Result<String, String> {
+        let chunks = split_content(content, MAX_CONTENT_CHARS);
+
+        if chunks.len() == 1 {
+            return self.summarize_chunk(content).await;
+        }
+
+        eprintln!(
+            "MLX: Content too large ({} chars), splitting into {} chunks for summarization",
+            content.len(),
+            chunks.len()
+        );
+
+        let mut chunk_summaries = Vec::new();
+        for (i, chunk) in chunks.iter().enumerate() {
+            match self.summarize_chunk(chunk).await {
+                Ok(summary) => {
+                    eprintln!("MLX: Chunk {}/{} summarized", i + 1, chunks.len());
+                    chunk_summaries.push(summary);
+                }
+                Err(e) => {
+                    eprintln!("MLX: Chunk {}/{} failed: {}", i + 1, chunks.len(), e);
+                }
+            }
+        }
+
+        if chunk_summaries.is_empty() {
+            return Err("No summaries generated from any content chunk".to_string());
+        }
+
+        if chunk_summaries.len() == 1 {
+            return Ok(chunk_summaries.into_iter().next().unwrap());
+        }
+
+        // Combine chunk summaries into a final summary
+        let combined = chunk_summaries.join("\n");
+        match self.summarize_chunk(&combined).await {
+            Ok(final_summary) => Ok(final_summary),
+            Err(_) => {
+                // If combining fails, return the first chunk's summary
+                Ok(chunk_summaries.into_iter().next().unwrap())
+            }
+        }
+    }
+}

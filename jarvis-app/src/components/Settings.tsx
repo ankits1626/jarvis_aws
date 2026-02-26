@@ -5,11 +5,17 @@ import { ModelList } from './ModelList';
 import type {
   Settings,
   ModelInfo,
+  LlmModelInfo,
   ModelProgressEvent,
+  LlmModelProgressEvent,
   ModelDownloadCompleteEvent,
+  LlmModelDownloadCompleteEvent,
   ModelDownloadErrorEvent,
+  LlmModelDownloadErrorEvent,
   SettingsChangedEvent,
   WhisperKitStatus,
+  MlxDiagnostics,
+  MlxVenvProgressEvent,
 } from '../state/types';
 
 interface BrowserSettings {
@@ -25,27 +31,34 @@ export function Settings({ onClose }: SettingsProps) {
   const [browserSettings, setBrowserSettings] = useState<BrowserSettings | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [whisperKitModels, setWhisperKitModels] = useState<ModelInfo[]>([]);
+  const [llmModels, setLlmModels] = useState<LlmModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [whisperKitStatus, setWhisperKitStatus] = useState<WhisperKitStatus | null>(null);
+  const [mlxDiagnostics, setMlxDiagnostics] = useState<MlxDiagnostics | null>(null);
+  const [venvSetupInProgress, setVenvSetupInProgress] = useState(false);
+  const [venvSetupPhase, setVenvSetupPhase] = useState<string | null>(null);
+  const [venvSetupError, setVenvSetupError] = useState<string | null>(null);
 
   // Load settings and models on mount
   useEffect(() => {
     const loadData = async () => {
       try {
         setLoading(true);
-        const [settingsData, browserSettingsData, modelsData, whisperKitModelsData, whisperKitStatusData] = await Promise.all([
+        const [settingsData, browserSettingsData, modelsData, whisperKitModelsData, whisperKitStatusData, llmModelsData] = await Promise.all([
           invoke<Settings>('get_settings'),
           invoke<BrowserSettings>('get_browser_settings'),
           invoke<ModelInfo[]>('list_models'),
           invoke<ModelInfo[]>('list_whisperkit_models'),
           invoke<WhisperKitStatus>('check_whisperkit_status'),
+          invoke<LlmModelInfo[]>('list_llm_models'),
         ]);
         setSettings(settingsData);
         setBrowserSettings(browserSettingsData);
         setModels(modelsData);
         setWhisperKitModels(whisperKitModelsData);
         setWhisperKitStatus(whisperKitStatusData);
+        setLlmModels(llmModelsData);
         setError(null);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -67,6 +80,24 @@ export function Settings({ onClose }: SettingsProps) {
       unlisten.then((fn) => fn());
     };
   }, []);
+
+  // Check MLX diagnostics when provider is MLX
+  useEffect(() => {
+    if (settings?.intelligence.provider === 'mlx') {
+      const checkDiagnostics = async () => {
+        try {
+          const diagnostics = await invoke<MlxDiagnostics>('check_mlx_dependencies');
+          setMlxDiagnostics(diagnostics);
+        } catch (err) {
+          console.error('Failed to check MLX diagnostics:', err);
+          setMlxDiagnostics(null);
+        }
+      };
+      checkDiagnostics();
+    } else {
+      setMlxDiagnostics(null);
+    }
+  }, [settings?.intelligence.provider]);
 
   // Listen for model-download-progress events (updates both whisper and whisperkit models)
   useEffect(() => {
@@ -124,6 +155,96 @@ export function Settings({ onClose }: SettingsProps) {
         );
       setModels(updateModels);
       setWhisperKitModels(updateModels);
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // Listen for llm-model-download-progress events
+  useEffect(() => {
+    const unlisten = listen<LlmModelProgressEvent>('llm-model-download-progress', (event) => {
+      setLlmModels((prevModels) =>
+        prevModels.map((model) =>
+          model.id === event.payload.model_id
+            ? {
+                ...model,
+                status: { type: 'downloading' as const, progress: event.payload.progress },
+              }
+            : model
+        )
+      );
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // Listen for llm-model-download-complete events
+  useEffect(() => {
+    const unlisten = listen<LlmModelDownloadCompleteEvent>('llm-model-download-complete', async () => {
+      // Refresh LLM model list to get updated status
+      try {
+        const llmModelsData = await invoke<LlmModelInfo[]>('list_llm_models');
+        setLlmModels(llmModelsData);
+      } catch (err) {
+        console.error('Failed to refresh LLM models:', err);
+      }
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // Listen for MLX venv setup events
+  useEffect(() => {
+    const unlistenProgress = listen<MlxVenvProgressEvent>('mlx-venv-setup-progress', (event) => {
+      setVenvSetupInProgress(true);
+      setVenvSetupPhase(event.payload.message);
+      setVenvSetupError(null);
+    });
+
+    const unlistenComplete = listen('mlx-venv-setup-complete', async () => {
+      setVenvSetupInProgress(false);
+      setVenvSetupPhase(null);
+      // Refresh diagnostics after setup completes
+      try {
+        const diagnostics = await invoke<MlxDiagnostics>('check_mlx_dependencies');
+        setMlxDiagnostics(diagnostics);
+      } catch (err) {
+        console.error('Failed to refresh diagnostics:', err);
+      }
+    });
+
+    const unlistenError = listen<{ error: string }>('mlx-venv-setup-error', (event) => {
+      setVenvSetupInProgress(false);
+      setVenvSetupPhase(null);
+      setVenvSetupError(event.payload.error);
+    });
+
+    return () => {
+      unlistenProgress.then((fn) => fn());
+      unlistenComplete.then((fn) => fn());
+      unlistenError.then((fn) => fn());
+    };
+  }, []);
+
+  // Listen for llm-model-download-error events
+  useEffect(() => {
+    const unlisten = listen<LlmModelDownloadErrorEvent>('llm-model-download-error', (event) => {
+      setLlmModels((prevModels) =>
+        prevModels.map((model) =>
+          model.id === event.payload.model_id
+            ? {
+                ...model,
+                status: { type: 'error' as const, message: event.payload.error },
+              }
+            : model
+        )
+      );
     });
 
     return () => {
@@ -259,6 +380,32 @@ export function Settings({ onClose }: SettingsProps) {
     }
   };
 
+  const handleProviderChange = async (provider: string) => {
+    try {
+      const updatedSettings = {
+        ...settings!,
+        intelligence: {
+          ...settings!.intelligence,
+          provider,
+        },
+      };
+      await invoke('update_settings', { settings: updatedSettings });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleLlmModelSwitch = async (modelId: string) => {
+    try {
+      await invoke('switch_llm_model', { modelId });
+      // Refresh model list after switch
+      const llmModelsData = await invoke<LlmModelInfo[]>('list_llm_models');
+      setLlmModels(llmModelsData);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   return (
     <div className="settings-panel">
       <div className="settings-header">
@@ -323,6 +470,201 @@ export function Settings({ onClose }: SettingsProps) {
             </p>
           </div>
         </section>
+
+        <section className="settings-section">
+          <h3>Intelligence Provider</h3>
+          <div className="provider-options">
+            <label className="provider-option">
+              <input
+                type="radio"
+                name="provider"
+                value="mlx"
+                checked={settings.intelligence.provider === "mlx"}
+                onChange={() => handleProviderChange("mlx")}
+              />
+              <span>MLX (Local, Private)</span>
+            </label>
+            <label className="provider-option">
+              <input
+                type="radio"
+                name="provider"
+                value="intelligencekit"
+                checked={settings.intelligence.provider === "intelligencekit"}
+                onChange={() => handleProviderChange("intelligencekit")}
+              />
+              <span>IntelligenceKit (Local, Fast)</span>
+            </label>
+            <label className="provider-option">
+              <input
+                type="radio"
+                name="provider"
+                value="api"
+                checked={settings.intelligence.provider === "api"}
+                disabled={true}
+                onChange={() => handleProviderChange("api")}
+              />
+              <span>Cloud API (Coming Soon)</span>
+            </label>
+          </div>
+          <p className="provider-note">Provider changes take effect immediately.</p>
+        </section>
+
+        {settings.intelligence.provider === "mlx" && (
+          <section className="settings-section">
+            <h3>MLX Models</h3>
+
+            {/* Python not found */}
+            {mlxDiagnostics && !mlxDiagnostics.python_found && (
+              <div className="info-banner" style={{
+                padding: '12px',
+                marginBottom: '16px',
+                backgroundColor: '#f8d7da',
+                border: '1px solid #f5c6cb',
+                borderRadius: '4px',
+                color: '#721c24'
+              }}>
+                <strong>Python not found:</strong> {mlxDiagnostics.python_error}
+                <br />
+                <small>Install Python 3.10+ or update the python_path setting below.</small>
+              </div>
+            )}
+
+            {/* Venv setup needed */}
+            {mlxDiagnostics && mlxDiagnostics.python_found && mlxDiagnostics.venv_status !== 'ready' && !venvSetupInProgress && (
+              <div className="info-banner" style={{
+                padding: '12px',
+                marginBottom: '16px',
+                backgroundColor: '#d1ecf1',
+                border: '1px solid #bee5eb',
+                borderRadius: '4px',
+                color: '#0c5460'
+              }}>
+                <strong>Python found:</strong> {mlxDiagnostics.python_version}
+                <br />
+                {mlxDiagnostics.venv_status === 'needs_update'
+                  ? <span>MLX environment needs updating (dependencies changed).</span>
+                  : <span>MLX environment not set up yet. Click below to auto-install dependencies.</span>
+                }
+                <div style={{ marginTop: '8px' }}>
+                  <button
+                    onClick={async () => {
+                      setVenvSetupInProgress(true);
+                      setVenvSetupPhase('Starting setup...');
+                      setVenvSetupError(null);
+                      try {
+                        await invoke('setup_mlx_venv');
+                      } catch (err) {
+                        setVenvSetupInProgress(false);
+                        setVenvSetupError(err instanceof Error ? err.message : String(err));
+                      }
+                    }}
+                    style={{
+                      padding: '6px 16px',
+                      backgroundColor: '#0c5460',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '13px',
+                    }}
+                  >
+                    {mlxDiagnostics.venv_status === 'needs_update' ? 'Update MLX Environment' : 'Setup MLX Environment'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Venv setup in progress */}
+            {venvSetupInProgress && (
+              <div className="info-banner" style={{
+                padding: '12px',
+                marginBottom: '16px',
+                backgroundColor: '#fff3cd',
+                border: '1px solid #ffc107',
+                borderRadius: '4px',
+                color: '#856404'
+              }}>
+                <strong>Setting up MLX environment...</strong>
+                <br />
+                {venvSetupPhase && <span>{venvSetupPhase}</span>}
+              </div>
+            )}
+
+            {/* Venv setup error */}
+            {venvSetupError && (
+              <div className="info-banner" style={{
+                padding: '12px',
+                marginBottom: '16px',
+                backgroundColor: '#f8d7da',
+                border: '1px solid #f5c6cb',
+                borderRadius: '4px',
+                color: '#721c24'
+              }}>
+                <strong>Setup failed:</strong> {venvSetupError}
+              </div>
+            )}
+
+            {/* Venv ready */}
+            {mlxDiagnostics && mlxDiagnostics.venv_status === 'ready' && !venvSetupInProgress && (
+              <div className="info-banner" style={{
+                padding: '12px',
+                marginBottom: '16px',
+                backgroundColor: '#d4edda',
+                border: '1px solid #c3e6cb',
+                borderRadius: '4px',
+                color: '#155724'
+              }}>
+                <strong>MLX environment ready</strong>
+                {mlxDiagnostics.venv_python_path && (
+                  <small style={{ display: 'block', marginTop: '4px', opacity: 0.8 }}>
+                    Using: {mlxDiagnostics.venv_python_path}
+                  </small>
+                )}
+                {llmModels.every(m => m.status.type === 'not_downloaded') && (
+                  <span style={{ display: 'block', marginTop: '4px' }}>
+                    <strong>No models downloaded yet.</strong> Download a model below to enable AI enrichment.
+                  </span>
+                )}
+              </div>
+            )}
+
+            <ModelList
+              models={llmModels.map(m => ({
+                filename: m.id,
+                display_name: m.display_name,
+                description: m.description,
+                size_estimate: m.size_estimate,
+                quality_tier: m.quality_tier,
+                status: m.status,
+              }))}
+              selectedModel={settings.intelligence.active_model}
+              onModelSelected={async () => {
+                try {
+                  const llmModelsData = await invoke<LlmModelInfo[]>('list_llm_models');
+                  setLlmModels(llmModelsData);
+                } catch (err) {
+                  console.error('Failed to refresh LLM models:', err);
+                }
+              }}
+              onDownloadStarted={(modelId) => {
+                setLlmModels((prev) =>
+                  prev.map((m) =>
+                    m.id === modelId
+                      ? { ...m, status: { type: 'downloading', progress: 0 } }
+                      : m
+                  )
+                );
+              }}
+              downloadCommand="download_llm_model"
+              cancelCommand="cancel_llm_download"
+              deleteCommand="delete_llm_model"
+              settingsField={undefined}
+              customSelectHandler={handleLlmModelSwitch}
+              invokeParamKey="modelId"
+              disableActiveModelDeletion={true}
+            />
+          </section>
+        )}
 
         <section className="settings-section">
           <h3>Voice Activity Detection (VAD)</h3>

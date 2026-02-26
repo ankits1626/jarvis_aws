@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use tauri::Manager;
 use files::FileManager;
 use gems::{GemStore, SqliteGemStore};
+use intelligence::{LlmModelManager, VenvManager};
 use recording::RecordingManager;
 use settings::{ModelManager, SettingsManager};
 use shortcuts::ShortcutManager;
@@ -39,24 +40,54 @@ pub fn run() {
                 .map_err(|e| format!("Failed to initialize gem store: {}", e))?;
             app.manage(Arc::new(gem_store) as Arc<dyn GemStore>);
             
-            // Initialize IntelProvider (IntelligenceKit with graceful fallback to NoOpProvider)
+            // Initialize SettingsManager and add to managed state (wrapped in Arc<RwLock>)
+            let settings_manager = SettingsManager::new()
+                .map_err(|e| format!("Failed to initialize SettingsManager: {}", e))?;
+            let settings_manager_arc = Arc::new(RwLock::new(settings_manager));
+            app.manage(settings_manager_arc.clone());
+            
+            // Initialize VenvManager for MLX Python environment
+            let venv_manager = VenvManager::new()
+                .map_err(|e| format!("Failed to initialize VenvManager: {}", e))?;
+            let venv_manager_arc = Arc::new(venv_manager);
+            app.manage(venv_manager_arc.clone());
+
+            // Load settings for provider initialization
+            let settings = settings_manager_arc.read()
+                .expect("Failed to acquire settings read lock")
+                .get();
+
+            // Resolve Python path: use venv if ready, else base python from settings
+            let resolved_python = venv_manager_arc.resolve_python_path(&settings.intelligence.python_path);
+            eprintln!("Intelligence: Resolved python path: {}", resolved_python);
+
+            // Initialize LlmModelManager with resolved Python path
+            let llm_manager = LlmModelManager::new(app.handle().clone(), resolved_python)
+                .map_err(|e| format!("Failed to initialize LlmModelManager: {}", e))?;
+            let llm_manager_arc = Arc::new(llm_manager);
+            app.manage(llm_manager_arc.clone());
+
+            // Initialize IntelProvider with fallback chain based on settings
             let app_handle = app.handle().clone();
-            let intel_provider = tauri::async_runtime::block_on(async move {
-                intelligence::create_provider(app_handle).await
+            let llm_manager_for_provider = llm_manager_arc.clone();
+            let venv_manager_for_provider = venv_manager_arc.clone();
+            let (intel_provider, mlx_provider) = tauri::async_runtime::block_on(async move {
+                intelligence::create_provider(app_handle, &settings, &llm_manager_for_provider, &venv_manager_for_provider).await
             });
+            
             let availability = tauri::async_runtime::block_on(intel_provider.check_availability());
             if availability.available {
-                eprintln!("IntelligenceKit: AI enrichment available");
+                eprintln!("Intelligence: AI enrichment available");
             } else {
-                eprintln!("IntelligenceKit: AI enrichment unavailable - {}", 
+                eprintln!("Intelligence: AI enrichment unavailable - {}", 
                     availability.reason.unwrap_or_else(|| "Unknown reason".to_string()));
             }
             app.manage(intel_provider);
             
-            // Initialize SettingsManager and add to managed state (wrapped in Arc<RwLock>)
-            let settings_manager = SettingsManager::new()
-                .map_err(|e| format!("Failed to initialize SettingsManager: {}", e))?;
-            app.manage(Arc::new(RwLock::new(settings_manager)));
+            // Wrap MlxProvider in Arc<tokio::sync::Mutex<>> for Phase 5 model switching
+            // This allows switch_llm_model command to mutate the provider reference
+            let mlx_provider_mutex = Arc::new(tokio::sync::Mutex::new(mlx_provider));
+            app.manage(mlx_provider_mutex);
             
             // Initialize ModelManager and add to managed state (wrapped in Arc)
             let model_manager = ModelManager::new(app.handle().clone())
@@ -229,11 +260,19 @@ pub fn run() {
             commands::get_gem,
             commands::enrich_gem,
             commands::check_intel_availability,
+            commands::check_mlx_dependencies,
             commands::filter_gems_by_tag,
             commands::capture_claude_conversation,
             commands::check_claude_panel,
             commands::check_accessibility_permission,
             commands::prepare_tab_gist_with_claude,
+            commands::list_llm_models,
+            commands::download_llm_model,
+            commands::cancel_llm_download,
+            commands::delete_llm_model,
+            commands::switch_llm_model,
+            commands::setup_mlx_venv,
+            commands::reset_mlx_venv,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

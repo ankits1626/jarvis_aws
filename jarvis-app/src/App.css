@@ -2150,6 +2150,13 @@ h1 {
   font-style: italic;
 }
 
+.gem-enrichment-source {
+  font-size: 11px;
+  color: #888;
+  margin-bottom: 8px;
+  font-style: italic;
+}
+
 .gem-enrich-button {
   background: #f59e0b;
   color: white;
@@ -2243,4 +2250,72 @@ h1 {
   color: #b45309;
   border: 1px solid rgba(251, 191, 36, 0.3);
   line-height: 1.5;
+}
+
+/* Error Toast Styles */
+.error-toast {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 10000;
+  animation: slideInRight 0.3s ease-out;
+}
+
+.error-toast-content {
+  background: #dc3545;
+  color: white;
+  padding: 16px 20px;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 400px;
+  min-width: 300px;
+}
+
+.error-icon {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.error-message {
+  flex: 1;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.error-toast .close-button {
+  background: transparent;
+  border: none;
+  color: white;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.8;
+  transition: opacity 0.2s;
+  flex-shrink: 0;
+}
+
+.error-toast .close-button:hover {
+  opacity: 1;
+}
+
+.error-toast .close-button svg {
+  width: 20px;
+  height: 20px;
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(400px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
 }

@@ -1,0 +1,1 @@
+/Users/ankit/code/learn/jarvis_aws/jarvis_aws/discussion/25-feb-next-step/jarvis-architecture-visualizer/101_projects/rust/gem-notebook/target/debug/gem-notebook: /Users/ankit/code/learn/jarvis_aws/jarvis_aws/discussion/25-feb-next-step/jarvis-architecture-visualizer/101_projects/rust/gem-notebook/src/main.rs

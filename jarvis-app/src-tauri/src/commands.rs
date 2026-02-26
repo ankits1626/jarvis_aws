@@ -1,6 +1,6 @@
 use crate::files::{FileManager, RecordingMetadata};
 use crate::gems::{Gem, GemPreview, GemStore};
-use crate::intelligence::IntelProvider;
+use crate::intelligence::{IntelProvider, LlmModelInfo, LlmModelManager, VenvManager};
 use crate::platform::PlatformDetector;
 use crate::recording::RecordingManager;
 use crate::settings::{ModelManager, Settings, SettingsManager};
@@ -62,6 +62,7 @@ fn page_gist_to_gem(gist: crate::browser::extractors::PageGist) -> Gem {
 /// 
 /// * `provider` - The IntelProvider trait object
 /// * `content` - The content to enrich
+/// * `provider_name` - The name of the provider being used
 /// 
 /// # Returns
 /// 
@@ -70,21 +71,28 @@ fn page_gist_to_gem(gist: crate::browser::extractors::PageGist) -> Gem {
 async fn enrich_content(
     provider: &dyn IntelProvider,
     content: &str,
+    provider_name: &str,
+    model_name: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     // Generate tags
     let tags = provider.generate_tags(content).await?;
-    
+
     // Generate summary
     let summary = provider.summarize(content).await?;
-    
+
     // Build ai_enrichment JSON
-    let ai_enrichment = serde_json::json!({
+    let mut ai_enrichment = serde_json::json!({
         "tags": tags,
         "summary": summary,
-        "provider": "intelligencekit",
+        "provider": provider_name,
         "enriched_at": chrono::Utc::now().to_rfc3339(),
     });
-    
+
+    // Add model name if available (MLX provider has an active model)
+    if let Some(model) = model_name {
+        ai_enrichment["model"] = serde_json::Value::String(model.to_string());
+    }
+
     Ok(ai_enrichment)
 }
 
@@ -153,6 +161,7 @@ pub async fn save_gem(
     gist: crate::browser::extractors::PageGist,
     gem_store: State<'_, Arc<dyn GemStore>>,
     intel_provider: State<'_, Arc<dyn IntelProvider>>,
+    settings_manager: State<'_, Arc<RwLock<SettingsManager>>>,
 ) -> Result<Gem, String> {
     // Convert PageGist to Gem using the helper function
     let mut gem = page_gist_to_gem(gist);
@@ -161,14 +170,23 @@ pub async fn save_gem(
     let availability = intel_provider.check_availability().await;
     
     if availability.available {
+        // Get provider name and model from settings
+        let (provider_name, model_name) = {
+            let manager = settings_manager.read()
+                .map_err(|e| format!("Failed to acquire settings lock: {}", e))?;
+            let s = manager.get();
+            (s.intelligence.provider.clone(), s.intelligence.active_model.clone())
+        };
+        let model_ref = if provider_name == "mlx" { Some(model_name.as_str()) } else { None };
+
         // Get content for enrichment (prefer content, fall back to description)
         let content_to_enrich = gem.content.as_ref()
             .or(gem.description.as_ref())
             .filter(|s| !s.trim().is_empty());
-        
+
         if let Some(content) = content_to_enrich {
             // Try to enrich, but don't fail the save if enrichment fails
-            match enrich_content(&**intel_provider, content).await {
+            match enrich_content(&**intel_provider, content, &provider_name, model_ref).await {
                 Ok(ai_enrichment) => {
                     gem.ai_enrichment = Some(ai_enrichment);
                 }
@@ -482,9 +500,11 @@ pub async fn get_gem(
 /// ```
 #[tauri::command]
 pub async fn enrich_gem(
+    app_handle: tauri::AppHandle,
     id: String,
     gem_store: State<'_, Arc<dyn GemStore>>,
     intel_provider: State<'_, Arc<dyn IntelProvider>>,
+    settings_manager: State<'_, Arc<RwLock<SettingsManager>>>,
 ) -> Result<Gem, String> {
     // Check availability first
     let availability = intel_provider.check_availability().await;
@@ -495,18 +515,39 @@ pub async fn enrich_gem(
         ));
     }
     
+    // Get provider name and model from settings
+    let (provider_name, model_name) = {
+        let manager = settings_manager.read()
+            .map_err(|e| format!("Failed to acquire settings lock: {}", e))?;
+        let s = manager.get();
+        (s.intelligence.provider.clone(), s.intelligence.active_model.clone())
+    };
+    let model_ref = if provider_name == "mlx" { Some(model_name.as_str()) } else { None };
+
     // Fetch gem by ID
     let mut gem = gem_store.get(&id).await?
         .ok_or_else(|| format!("Gem with id '{}' not found", id))?;
-    
+
     // Get content for enrichment (prefer content, fall back to description)
     let content_to_enrich = gem.content.as_ref()
         .or(gem.description.as_ref())
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| "Gem has no content or description to enrich".to_string())?;
-    
+
     // Enrich the content
-    let ai_enrichment = enrich_content(&**intel_provider, content_to_enrich).await?;
+    let ai_enrichment = match enrich_content(&**intel_provider, content_to_enrich, &provider_name, model_ref).await {
+        Ok(enrichment) => enrichment,
+        Err(e) => {
+            // Check if error indicates sidecar crash (broken pipe)
+            if e.contains("broken pipe") || e.contains("closed connection") || e.contains("Sidecar") {
+                // Emit event to frontend for toast notification
+                let _ = app_handle.emit("mlx-sidecar-error", serde_json::json!({
+                    "error": e.clone()
+                }));
+            }
+            return Err(e);
+        }
+    };
     
     // Update gem with enrichment
     gem.ai_enrichment = Some(ai_enrichment);
@@ -555,6 +596,140 @@ pub async fn check_intel_availability(
     intel_provider: State<'_, Arc<dyn IntelProvider>>,
 ) -> Result<crate::intelligence::AvailabilityResult, String> {
     Ok(intel_provider.check_availability().await)
+}
+
+/// Check MLX dependencies (Python and mlx packages)
+///
+/// This command checks if Python is installed and accessible, and provides
+/// diagnostic information about MLX availability. Useful for troubleshooting
+/// MLX provider initialization failures.
+///
+/// # Arguments
+///
+/// * `settings_manager` - Managed state containing settings (for python_path)
+///
+/// # Returns
+///
+/// * `Ok(MlxDiagnostics)` - Diagnostic information about Python and MLX
+///
+/// # Examples
+///
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+///
+/// interface MlxDiagnostics {
+///   python_found: boolean;
+///   python_version?: string;
+///   python_error?: string;
+/// }
+///
+/// try {
+///   const diagnostics = await invoke<MlxDiagnostics>('check_mlx_dependencies');
+///   if (!diagnostics.python_found) {
+///     console.error('Python not found:', diagnostics.python_error);
+///   }
+/// } catch (error) {
+///   console.error('Failed to check MLX dependencies:', error);
+/// }
+/// ```
+#[derive(Serialize)]
+pub struct MlxDiagnostics {
+    pub python_found: bool,
+    pub python_version: Option<String>,
+    pub python_error: Option<String>,
+    pub venv_status: String,
+    pub venv_python_path: Option<String>,
+}
+
+#[tauri::command]
+pub async fn check_mlx_dependencies(
+    settings_manager: State<'_, Arc<RwLock<SettingsManager>>>,
+    venv_manager: State<'_, Arc<VenvManager>>,
+) -> Result<MlxDiagnostics, String> {
+    let settings = {
+        let manager = settings_manager.read()
+            .map_err(|e| format!("Failed to acquire settings lock: {}", e))?;
+        manager.get()
+    };
+
+    let python_path = &settings.intelligence.python_path;
+
+    // Check venv status
+    let venv_status = venv_manager.status();
+    let venv_status_str = serde_json::to_value(&venv_status)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| "unknown".to_string());
+    let venv_python = venv_manager.venv_python_path()
+        .map(|p| p.to_string_lossy().to_string());
+
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+
+    // Try to run python --version
+    match tokio::process::Command::new(python_path)
+        .arg("--version")
+        .current_dir(&home)
+        .output()
+        .await
+    {
+        Ok(output) => {
+            if output.status.success() {
+                let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                Ok(MlxDiagnostics {
+                    python_found: true,
+                    python_version: Some(version),
+                    python_error: None,
+                    venv_status: venv_status_str.clone(),
+                    venv_python_path: venv_python,
+                })
+            } else {
+                Ok(MlxDiagnostics {
+                    python_found: false,
+                    python_version: None,
+                    python_error: Some(String::from_utf8_lossy(&output.stderr).trim().to_string()),
+                    venv_status: venv_status_str.clone(),
+                    venv_python_path: venv_python,
+                })
+            }
+        }
+        Err(e) => {
+            let error_msg = if e.kind() == std::io::ErrorKind::NotFound {
+                format!("Python not found at '{}'. Please install Python 3.10+ or update python_path in settings.", python_path)
+            } else {
+                format!("Failed to check Python: {}", e)
+            };
+
+            Ok(MlxDiagnostics {
+                python_found: false,
+                python_version: None,
+                python_error: Some(error_msg),
+                venv_status: venv_status_str.clone(),
+                venv_python_path: venv_python,
+            })
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn setup_mlx_venv(
+    settings_manager: State<'_, Arc<RwLock<SettingsManager>>>,
+    venv_manager: State<'_, Arc<VenvManager>>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let python_path = {
+        let manager = settings_manager.read()
+            .map_err(|e| format!("Failed to acquire settings lock: {}", e))?;
+        manager.get().intelligence.python_path.clone()
+    };
+
+    venv_manager.setup(&python_path, &app_handle).await
+}
+
+#[tauri::command]
+pub async fn reset_mlx_venv(
+    venv_manager: State<'_, Arc<VenvManager>>,
+) -> Result<(), String> {
+    venv_manager.reset()
 }
 
 /// Filter gems by tag
@@ -1953,5 +2128,265 @@ pub fn check_accessibility_permission() -> bool {
     #[cfg(not(target_os = "macos"))]
     {
         false
+    }
+}
+
+/// List all LLM models with their status
+///
+/// This command returns all models from the LLM catalog with their current
+/// status (downloaded, downloading, not downloaded, or error).
+///
+/// # Arguments
+///
+/// * `llm_manager` - Managed state containing the LlmModelManager
+///
+/// # Returns
+///
+/// * `Ok(Vec<LlmModelInfo>)` - List of all models with status
+/// * `Err(String)` - Error message if listing fails
+///
+/// # Example
+///
+/// ```typescript
+/// const models = await invoke('list_llm_models');
+/// models.forEach(model => {
+///   console.log(`${model.display_name}: ${model.status.type}`);
+/// });
+/// ```
+#[tauri::command]
+pub async fn list_llm_models(
+    llm_manager: State<'_, Arc<LlmModelManager>>,
+) -> Result<Vec<LlmModelInfo>, String> {
+    llm_manager.list_models().await
+}
+
+/// Download an LLM model from HuggingFace
+///
+/// This command starts downloading a model in the background. Progress is
+/// reported via `llm-model-download-progress` events, and completion is
+/// reported via `llm-model-download-complete` event.
+///
+/// # Arguments
+///
+/// * `model_id` - The model ID from the catalog (e.g., "qwen3-8b-4bit")
+/// * `llm_manager` - Managed state containing the LlmModelManager
+///
+/// # Returns
+///
+/// * `Ok(())` - Download started successfully
+/// * `Err(String)` - Error message if download cannot be started
+///
+/// # Example
+///
+/// ```typescript
+/// try {
+///   await invoke('download_llm_model', { modelId: 'qwen3-8b-4bit' });
+///   console.log('Download started');
+/// } catch (error) {
+///   console.error(`Failed to start download: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn download_llm_model(
+    model_id: String,
+    llm_manager: State<'_, Arc<LlmModelManager>>,
+) -> Result<(), String> {
+    llm_manager.download_model(model_id).await
+}
+
+/// Cancel an in-progress LLM model download
+///
+/// This command cancels a currently downloading model and cleans up
+/// any partial files.
+///
+/// # Arguments
+///
+/// * `model_id` - The model ID being downloaded
+/// * `llm_manager` - Managed state containing the LlmModelManager
+///
+/// # Returns
+///
+/// * `Ok(())` - Download cancelled successfully
+/// * `Err(String)` - Error message if cancellation fails
+///
+/// # Example
+///
+/// ```typescript
+/// try {
+///   await invoke('cancel_llm_download', { modelId: 'qwen3-8b-4bit' });
+///   console.log('Download cancelled');
+/// } catch (error) {
+///   console.error(`Failed to cancel: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn cancel_llm_download(
+    model_id: String,
+    llm_manager: State<'_, Arc<LlmModelManager>>,
+) -> Result<(), String> {
+    llm_manager.cancel_download(model_id).await
+}
+
+/// Delete a downloaded LLM model
+///
+/// This command deletes a model from disk. It prevents deletion of the
+/// currently active model to avoid breaking the inference provider.
+///
+/// # Arguments
+///
+/// * `model_id` - The model ID to delete
+/// * `llm_manager` - Managed state containing the LlmModelManager
+/// * `settings_manager` - Managed state for checking active model
+///
+/// # Returns
+///
+/// * `Ok(())` - Model deleted successfully
+/// * `Err(String)` - Error message if deletion fails
+///
+/// # Example
+///
+/// ```typescript
+/// try {
+///   await invoke('delete_llm_model', { modelId: 'qwen3-4b-4bit' });
+///   console.log('Model deleted');
+/// } catch (error) {
+///   console.error(`Failed to delete: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn delete_llm_model(
+    model_id: String,
+    llm_manager: State<'_, Arc<LlmModelManager>>,
+    settings_manager: State<'_, Arc<RwLock<SettingsManager>>>,
+) -> Result<(), String> {
+    // Check if this is the active model
+    let active_model = {
+        let manager = settings_manager.read()
+            .map_err(|e| format!("Failed to acquire settings lock: {}", e))?;
+        manager.get().intelligence.active_model.clone()
+    };
+    
+    if active_model == model_id {
+        return Err(format!(
+            "Cannot delete active model '{}'. Switch to a different model first.",
+            model_id
+        ));
+    }
+    
+    llm_manager.delete_model(model_id).await
+}
+
+/// Switch to a different LLM model
+///
+/// This command switches the active LLM model by:
+/// 1. Verifying the model is downloaded
+/// 2. Updating settings with the new model
+/// 3. Reloading the MlxProvider sidecar with the new model
+///
+/// # Arguments
+///
+/// * `model_id` - The model ID to switch to
+/// * `llm_manager` - Managed state containing the LlmModelManager
+/// * `settings_manager` - Managed state for updating active model
+/// * `mlx_provider` - Managed state containing the MlxProvider reference
+///
+/// # Returns
+///
+/// * `Ok(())` - Model switched successfully
+/// * `Err(String)` - Error message if switch fails
+///
+/// # Example
+///
+/// ```typescript
+/// try {
+///   await invoke('switch_llm_model', { modelId: 'qwen3-8b-4bit' });
+///   console.log('Switched to new model');
+/// } catch (error) {
+///   console.error(`Failed to switch: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn switch_llm_model(
+    model_id: String,
+    llm_manager: State<'_, Arc<LlmModelManager>>,
+    settings_manager: State<'_, Arc<RwLock<SettingsManager>>>,
+    mlx_provider: State<'_, Arc<tokio::sync::Mutex<Option<Arc<crate::intelligence::MlxProvider>>>>>,
+) -> Result<(), String> {
+    // Verify model is downloaded
+    let model_path = llm_manager.model_path(&model_id);
+    if !model_path.exists() {
+        return Err(format!(
+            "Model '{}' is not downloaded. Download it first.",
+            model_id
+        ));
+    }
+    
+    // Verify model has config.json
+    if !model_path.join("config.json").exists() {
+        return Err(format!(
+            "Model '{}' is incomplete (missing config.json). Re-download it.",
+            model_id
+        ));
+    }
+    
+    // Save the old model ID for rollback on failure
+    let old_model_id = {
+        let manager = settings_manager.read()
+            .map_err(|e| format!("Failed to acquire settings lock: {}", e))?;
+        manager.get().intelligence.active_model.clone()
+    };
+    
+    // Update settings with new active model
+    {
+        let manager = settings_manager.read()
+            .map_err(|e| format!("Failed to acquire settings lock: {}", e))?;
+        let mut settings = manager.get();
+        settings.intelligence.active_model = model_id.clone();
+        manager.update(settings)
+            .map_err(|e| format!("Failed to save settings: {}", e))?;
+    }
+    
+    // If MlxProvider is active, reload it with the new model
+    let provider_guard = mlx_provider.lock().await;
+    if let Some(provider) = provider_guard.as_ref() {
+        // Try to switch the model in the running sidecar
+        match provider.switch_model(model_path).await {
+            Ok(()) => {
+                eprintln!("Successfully switched to model: {}", model_id);
+                Ok(())
+            }
+            Err(e) => {
+                // Model switch failed - roll back settings to old model
+                eprintln!("Failed to hot-reload model: {}. Rolling back settings.", e);
+                
+                // Rollback settings
+                let rollback_result = {
+                    let manager = settings_manager.read()
+                        .map_err(|e| format!("Failed to acquire settings lock for rollback: {}", e))?;
+                    let mut settings = manager.get();
+                    settings.intelligence.active_model = old_model_id.clone();
+                    manager.update(settings)
+                };
+                
+                match rollback_result {
+                    Ok(()) => {
+                        Err(format!(
+                            "Failed to switch model: {}. Settings rolled back to '{}'.",
+                            e, old_model_id
+                        ))
+                    }
+                    Err(rollback_err) => {
+                        Err(format!(
+                            "Failed to switch model: {}. WARNING: Settings rollback also failed: {}. Settings may be inconsistent - restart the app.",
+                            e, rollback_err
+                        ))
+                    }
+                }
+            }
+        }
+    } else {
+        // No MlxProvider active (using IntelligenceKit or NoOp)
+        // Settings updated successfully, will take effect on next provider init
+        Ok(())
     }
 }

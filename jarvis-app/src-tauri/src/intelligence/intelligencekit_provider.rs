@@ -10,65 +10,12 @@ use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
 use super::provider::{AvailabilityResult, IntelProvider};
+use super::utils::split_content;
 
 /// Max characters per chunk to stay within Apple Foundation Models' 4096-token context window.
 /// Apple's tokenizer averages ~2.5 chars/token. Budget ~3000 tokens for content,
 /// leaving ~1000 tokens for prompt, instructions, and output.
 const MAX_CONTENT_CHARS: usize = 7_000;
-
-/// Snap a byte index down to the nearest valid UTF-8 char boundary.
-fn snap_to_char_boundary(s: &str, index: usize) -> usize {
-    if index >= s.len() {
-        return s.len();
-    }
-    let mut i = index;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-/// Split content into chunks at paragraph/line boundaries, each <= max_chars.
-/// All slice boundaries are snapped to valid UTF-8 char boundaries.
-fn split_content(content: &str, max_chars: usize) -> Vec<&str> {
-    if content.len() <= max_chars {
-        return vec![content];
-    }
-
-    let mut chunks = Vec::new();
-    let mut start = 0;
-
-    while start < content.len() {
-        if start + max_chars >= content.len() {
-            chunks.push(&content[start..]);
-            break;
-        }
-
-        let end = snap_to_char_boundary(content, start + max_chars);
-
-        // Try to break at paragraph boundary (double newline) within last 500 chars
-        let search_start = snap_to_char_boundary(content, if end > start + 500 { end - 500 } else { start });
-        let break_pos = content[search_start..end]
-            .rfind("\n\n")
-            .map(|pos| search_start + pos + 2)
-            .or_else(|| {
-                content[search_start..end]
-                    .rfind('\n')
-                    .map(|pos| search_start + pos + 1)
-            })
-            .or_else(|| {
-                content[search_start..end]
-                    .rfind(' ')
-                    .map(|pos| search_start + pos + 1)
-            })
-            .unwrap_or(end);
-
-        chunks.push(&content[start..break_pos]);
-        start = break_pos;
-    }
-
-    chunks
-}
 
 /// NDJSON command structure for IntelligenceKit protocol
 #[derive(Serialize)]

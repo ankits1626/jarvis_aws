@@ -5,6 +5,7 @@ import { useRecording } from "./hooks/useRecording";
 import { useTauriEvent } from "./hooks/useTauriEvent";
 import { DeleteConfirmDialog } from "./components/DeleteConfirmDialog";
 import { TranscriptDisplay } from "./components/TranscriptDisplay";
+import { ErrorToast } from "./components/ErrorToast";
 import { Settings } from "./components/Settings";
 import { YouTubeSection } from "./components/YouTubeSection";
 import { BrowserTool } from "./components/BrowserTool";
@@ -47,6 +48,7 @@ function App() {
   const [showYouTube, setShowYouTube] = useState(false);
   const [showBrowserTool, setShowBrowserTool] = useState(false);
   const [showGems, setShowGems] = useState(false);
+  const [toastError, setToastError] = useState<string | null>(null);
 
   // Load recordings on mount (Requirement 1.2)
   useEffect(() => {
@@ -102,6 +104,15 @@ function App() {
       }
     };
   }, []);
+
+  // Listen for MLX sidecar errors (broken pipe, crashes)
+  useTauriEvent<{ error: string }>(
+    'mlx-sidecar-error',
+    useCallback((event) => {
+      console.error('[App] MLX sidecar error:', event.error);
+      setToastError(`AI enrichment error: ${event.error}`);
+    }, [])
+  );
 
   // Cleanup audio URL when component unmounts or selection changes
   useEffect(() => {
@@ -478,6 +489,12 @@ function App() {
             <GemsPanel onClose={() => setShowGems(false)} />
           </div>
         )}
+
+        {/* Error Toast for MLX sidecar crashes and other runtime errors */}
+        <ErrorToast
+          message={toastError}
+          onClose={() => setToastError(null)}
+        />
       </div>
     </div>
   );

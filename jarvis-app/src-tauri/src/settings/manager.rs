@@ -8,6 +8,8 @@ pub struct Settings {
     pub transcription: TranscriptionSettings,
     #[serde(default)]
     pub browser: BrowserSettings,
+    #[serde(default)]
+    pub intelligence: IntelligenceSettings,
 }
 
 /// Transcription-specific settings
@@ -30,6 +32,14 @@ pub struct TranscriptionSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserSettings {
     pub observer_enabled: bool,
+}
+
+/// Intelligence/AI provider settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntelligenceSettings {
+    pub provider: String,       // "mlx" | "intelligencekit" | "api"
+    pub active_model: String,   // catalog ID, e.g. "qwen3-8b-4bit"
+    pub python_path: String,    // "python3" or absolute path
 }
 
 fn default_engine() -> String {
@@ -67,11 +77,22 @@ impl Default for BrowserSettings {
     }
 }
 
+impl Default for IntelligenceSettings {
+    fn default() -> Self {
+        Self {
+            provider: "mlx".to_string(),
+            active_model: "qwen3-8b-4bit".to_string(),
+            python_path: "python3".to_string(),
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
             transcription: TranscriptionSettings::default(),
             browser: BrowserSettings::default(),
+            intelligence: IntelligenceSettings::default(),
         }
     }
 }
@@ -217,6 +238,25 @@ impl SettingsManager {
                 "Transcription engine must be 'whisper-rs' or 'whisperkit', got '{}'",
                 engine
             ));
+        }
+        
+        // Validate intelligence provider
+        let valid_providers = ["mlx", "intelligencekit", "api"];
+        if !valid_providers.contains(&settings.intelligence.provider.as_str()) {
+            return Err(format!(
+                "Invalid intelligence provider: {}. Must be one of: mlx, intelligencekit, api",
+                settings.intelligence.provider
+            ));
+        }
+        
+        // Validate active_model is non-empty
+        if settings.intelligence.active_model.trim().is_empty() {
+            return Err("Intelligence active_model cannot be empty".to_string());
+        }
+        
+        // Validate python_path is non-empty
+        if settings.intelligence.python_path.trim().is_empty() {
+            return Err("Intelligence python_path cannot be empty".to_string());
         }
         
         Ok(())

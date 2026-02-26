@@ -61,6 +61,9 @@ pub struct GemPreview {
     
     /// AI-generated summary (extracted from ai_enrichment.summary)
     pub summary: Option<String>,
+
+    /// Source of enrichment, e.g. "mlx / Qwen3-8B-4bit" (extracted from ai_enrichment)
+    pub enrichment_source: Option<String>,
 }
 
 /// Storage interface for gems - implementations are swappable

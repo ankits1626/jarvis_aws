@@ -205,10 +205,25 @@ export interface TranscriptionSettings {
   window_duration: number;
 }
 
+/** Intelligence settings matching Rust IntelligenceSettings struct */
+export interface IntelligenceSettings {
+  /** Provider type: "mlx", "intelligencekit", or "api" */
+  provider: string;
+  
+  /** Active model catalog ID (e.g., "qwen3-8b-4bit") */
+  active_model: string;
+  
+  /** Python executable path (e.g., "python3" or absolute path) */
+  python_path: string;
+}
+
 /** Main settings structure matching Rust Settings struct */
 export interface Settings {
   /** Transcription-specific settings */
   transcription: TranscriptionSettings;
+  
+  /** Intelligence-specific settings */
+  intelligence: IntelligenceSettings;
 }
 
 /** Model status enum matching Rust ModelStatus */
@@ -265,6 +280,57 @@ export interface ModelDownloadErrorEvent {
 
 /** Payload for settings-changed event */
 export type SettingsChangedEvent = Settings;
+
+/** LLM model information matching Rust LlmModelInfo struct */
+export interface LlmModelInfo {
+  /** Model catalog ID (e.g., "qwen3-8b-4bit") */
+  id: string;
+  
+  /** Human-readable display name (e.g., "Qwen 3 8B (Q4)") */
+  display_name: string;
+  
+  /** HuggingFace repo ID (e.g., "mlx-community/Qwen3-8B-4bit") */
+  repo_id: string;
+  
+  /** Short description of the model */
+  description: string;
+  
+  /** Estimated download size (e.g., "~5 GB") */
+  size_estimate: string;
+  
+  /** Quality tier: "basic", "good", "great", or "best" */
+  quality_tier: string;
+  
+  /** Current status of the model */
+  status: ModelStatus;
+}
+
+/** Payload for llm-model-download-progress event */
+export interface LlmModelProgressEvent {
+  /** Model catalog ID */
+  model_id: string;
+  
+  /** Download progress (0.0 to 100.0) */
+  progress: number;
+  
+  /** Downloaded size in MB */
+  downloaded_mb: number;
+}
+
+/** Payload for llm-model-download-complete event */
+export interface LlmModelDownloadCompleteEvent {
+  /** Model catalog ID */
+  model_id: string;
+}
+
+/** Payload for llm-model-download-error event */
+export interface LlmModelDownloadErrorEvent {
+  /** Model catalog ID */
+  model_id: string;
+  
+  /** Error message */
+  error: string;
+}
 
 /** WhisperKit availability status matching Rust WhisperKitStatus struct */
 export interface WhisperKitStatus {
@@ -401,9 +467,12 @@ export interface Gem {
     /** AI-generated one-sentence summary */
     summary: string;
     
-    /** Provider that generated the enrichment (e.g., "intelligencekit") */
+    /** Provider that generated the enrichment (e.g., "mlx", "intelligencekit") */
     provider: string;
-    
+
+    /** Model used for enrichment (e.g., "qwen3-8b-4bit"), only for MLX provider */
+    model?: string;
+
     /** ISO 8601 timestamp when enrichment was generated */
     enriched_at: string;
   } | null;
@@ -443,6 +512,9 @@ export interface GemPreview {
   
   /** AI-generated one-sentence summary (extracted from ai_enrichment) */
   summary: string | null;
+
+  /** Source of enrichment, e.g. "mlx / qwen3-8b-4bit" (extracted from ai_enrichment) */
+  enrichment_source: string | null;
 }
 
 /**
@@ -458,4 +530,28 @@ export interface AvailabilityResult {
   
   /** Reason why AI enrichment is unavailable (undefined if available) */
   reason?: string;
+}
+
+/** MLX dependencies diagnostic information matching Rust MlxDiagnostics struct */
+export interface MlxDiagnostics {
+  /** Whether Python was found at the configured path */
+  python_found: boolean;
+
+  /** Python version string if found (e.g., "Python 3.11.5") */
+  python_version?: string;
+
+  /** Error message if Python check failed */
+  python_error?: string;
+
+  /** Venv status: "not_created", "ready", or "needs_update" */
+  venv_status: string;
+
+  /** Path to the venv Python binary if venv exists */
+  venv_python_path?: string;
+}
+
+/** Progress event during MLX venv setup */
+export interface MlxVenvProgressEvent {
+  phase: 'creating_venv' | 'installing_deps' | 'validating';
+  message: string;
 }

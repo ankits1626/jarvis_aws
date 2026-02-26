@@ -51,6 +51,7 @@ mod property_tests {
                     ..Default::default()
                 },
                 browser: crate::settings::BrowserSettings::default(),
+                intelligence: crate::settings::IntelligenceSettings::default(),
             };
 
             // Verify the settings can be updated successfully
@@ -143,6 +144,7 @@ mod property_tests {
                 ..Default::default()
             },
             browser: crate::settings::BrowserSettings::default(),
+            intelligence: crate::settings::IntelligenceSettings::default(),
         };
 
         // Test that the manager update succeeds
@@ -280,5 +282,143 @@ mod whisperkit_catalog_tests {
             model_names.contains(&"openai_whisper-large-v3"),
             "Catalog should contain large-v3 model"
         );
+    }
+}
+
+#[cfg(test)]
+mod intelligence_settings_tests {
+    use crate::settings::{Settings, SettingsManager};
+
+    /// Test backward compatibility with settings files that don't have intelligence field
+    /// 
+    /// This test verifies that settings files created before the MLX integration
+    /// (without intelligence field) can still be loaded successfully with appropriate defaults.
+    #[test]
+    fn test_backward_compatibility_missing_intelligence_field() {
+        // Create a temporary directory
+        let temp_dir = tempfile::tempdir().unwrap();
+        let settings_path = temp_dir.path().join("settings.json");
+        
+        // Write a settings file WITHOUT the intelligence field (simulating old format)
+        let old_format_json = r#"{
+            "transcription": {
+                "vad_enabled": true,
+                "vad_threshold": 0.4,
+                "vosk_enabled": false,
+                "whisper_enabled": true,
+                "whisper_model": "ggml-small.en.bin",
+                "transcription_engine": "whisper-rs",
+                "whisperkit_model": "openai_whisper-large-v3_turbo",
+                "window_duration": 3.0
+            },
+            "browser": {
+                "observer_enabled": true
+            }
+        }"#;
+        
+        std::fs::write(&settings_path, old_format_json).unwrap();
+        
+        // Load settings using SettingsManager
+        let manager = SettingsManager::new_with_path(settings_path.clone()).unwrap();
+        let loaded_settings = manager.get();
+        
+        // Verify old fields are preserved
+        assert_eq!(loaded_settings.transcription.vad_enabled, true);
+        assert_eq!(loaded_settings.transcription.vad_threshold, 0.4);
+        assert_eq!(loaded_settings.browser.observer_enabled, true);
+        
+        // Verify intelligence field uses defaults
+        assert_eq!(
+            loaded_settings.intelligence.provider,
+            "mlx",
+            "intelligence.provider should default to 'mlx'"
+        );
+        assert_eq!(
+            loaded_settings.intelligence.active_model,
+            "qwen3-8b-4bit",
+            "intelligence.active_model should default to 'qwen3-8b-4bit'"
+        );
+        assert_eq!(
+            loaded_settings.intelligence.python_path,
+            "python3",
+            "intelligence.python_path should default to 'python3'"
+        );
+        
+        // Verify settings can be saved and reloaded without errors
+        let result = manager.update(loaded_settings.clone());
+        assert!(result.is_ok(), "Settings update should succeed after loading old format");
+        
+        // Verify the saved file now includes the intelligence field
+        let file_contents = std::fs::read_to_string(&settings_path).unwrap();
+        assert!(
+            file_contents.contains("intelligence"),
+            "Saved settings should include intelligence field"
+        );
+    }
+    
+    /// Test settings validation for intelligence provider
+    #[test]
+    fn test_intelligence_provider_validation() {
+        // Create a temporary directory
+        let temp_dir = tempfile::tempdir().unwrap();
+        let settings_path = temp_dir.path().join("settings.json");
+        
+        // Create settings manager
+        let manager = SettingsManager::new_with_path(settings_path).unwrap();
+        
+        // Test invalid provider
+        let mut invalid_settings = manager.get();
+        invalid_settings.intelligence.provider = "invalid-provider".to_string();
+        
+        let result = manager.update(invalid_settings);
+        assert!(
+            result.is_err(),
+            "Update should fail for invalid provider"
+        );
+        assert!(
+            result.unwrap_err().contains("Invalid intelligence provider"),
+            "Error message should mention invalid provider"
+        );
+        
+        // Test empty active_model
+        let mut invalid_settings = manager.get();
+        invalid_settings.intelligence.active_model = "".to_string();
+        
+        let result = manager.update(invalid_settings);
+        assert!(
+            result.is_err(),
+            "Update should fail for empty active_model"
+        );
+        assert!(
+            result.unwrap_err().contains("active_model cannot be empty"),
+            "Error message should mention empty active_model"
+        );
+        
+        // Test empty python_path
+        let mut invalid_settings = manager.get();
+        invalid_settings.intelligence.python_path = "   ".to_string();
+        
+        let result = manager.update(invalid_settings);
+        assert!(
+            result.is_err(),
+            "Update should fail for empty python_path"
+        );
+        assert!(
+            result.unwrap_err().contains("python_path cannot be empty"),
+            "Error message should mention empty python_path"
+        );
+        
+        // Test valid providers
+        for provider in &["mlx", "intelligencekit", "api"] {
+            let mut valid_settings = manager.get();
+            valid_settings.intelligence.provider = provider.to_string();
+            
+            let result = manager.update(valid_settings);
+            assert!(
+                result.is_ok(),
+                "Update should succeed for valid provider '{}'",
+                provider
+            );
+        }
     }
 }

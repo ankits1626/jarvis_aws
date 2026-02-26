@@ -11,6 +11,9 @@ interface ModelListProps {
   cancelCommand?: string;
   deleteCommand?: string;
   settingsField?: 'whisper_model' | 'whisperkit_model';
+  customSelectHandler?: (modelName: string) => Promise<void>;
+  invokeParamKey?: string;
+  disableActiveModelDeletion?: boolean;
 }
 
 const TIER_LABELS: Record<string, { label: string; color: string }> = {
@@ -29,6 +32,9 @@ export function ModelList({
   cancelCommand = 'cancel_download',
   deleteCommand = 'delete_model',
   settingsField = 'whisper_model',
+  customSelectHandler,
+  invokeParamKey = 'modelName',
+  disableActiveModelDeletion = false,
 }: ModelListProps) {
   const [deletingModel, setDeletingModel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +49,7 @@ export function ModelList({
   const handleDownload = async (modelName: string) => {
     try {
       setError(null);
-      await invoke(downloadCommand, { modelName });
+      await invoke(downloadCommand, { [invokeParamKey]: modelName });
       onDownloadStarted?.(modelName);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -54,7 +60,7 @@ export function ModelList({
     if (!cancelCommand) return;
     try {
       setError(null);
-      await invoke(cancelCommand, { modelName });
+      await invoke(cancelCommand, { [invokeParamKey]: modelName });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -64,7 +70,7 @@ export function ModelList({
     if (!deleteCommand) return;
     try {
       setError(null);
-      await invoke(deleteCommand, { modelName });
+      await invoke(deleteCommand, { [invokeParamKey]: modelName });
       setDeletingModel(null);
       onModelSelected(modelName);
     } catch (err) {
@@ -76,16 +82,23 @@ export function ModelList({
   const handleSelect = async (modelName: string) => {
     try {
       setError(null);
-      // Get current settings first
-      const settings = await invoke<Settings>('get_settings');
-      const updatedSettings = {
-        ...settings,
-        transcription: {
-          ...settings.transcription,
-          [settingsField]: modelName,
-        },
-      };
-      await invoke('update_settings', { settings: updatedSettings });
+      
+      if (customSelectHandler) {
+        // Use custom handler if provided (e.g., for LLM models)
+        await customSelectHandler(modelName);
+      } else {
+        // Default behavior: update settings
+        const settings = await invoke<Settings>('get_settings');
+        const updatedSettings = {
+          ...settings,
+          transcription: {
+            ...settings.transcription,
+            [settingsField]: modelName,
+          },
+        };
+        await invoke('update_settings', { settings: updatedSettings });
+      }
+      
       onModelSelected(modelName);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -185,7 +198,9 @@ export function ModelList({
                   {deleteCommand && (
                     <button
                       onClick={() => confirmDelete(model.filename)}
+                      disabled={disableActiveModelDeletion && isSelected}
                       className="delete-button"
+                      title={disableActiveModelDeletion && isSelected ? 'Cannot delete active model' : ''}
                     >
                       Delete
                     </button>

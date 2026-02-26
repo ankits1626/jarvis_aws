@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Learn Tauri</title>
+    <script type="module" src="/main.js" defer></script>
+  </head>
+
+  <body>
+    <main class="container">
+      <h1>Learn Tauri 🦀⚡</h1>
+
+      <section>
+        <h2>Command 1: Greet</h2>
+        <form class="row" id="greet-form">
+          <input id="greet-input" placeholder="Enter a name..." />
+          <button type="submit">Greet</button>
+        </form>
+        <p id="greet-msg"></p>
+      </section>
+
+      <section>
+        <h2>Command 2: Add Numbers</h2>
+        <button id="add-btn">Calculate 10 + 32</button>
+        <p id="add-result"></p>
+      </section>
+
+      <section>
+        <h2>Command 3: System Info</h2>
+        <button id="sys-info-btn">Get System Info</button>
+        <p id="sys-info"></p>
+      </section>
+
+      <section>
+        <h2>Command 4: Counter (State)</h2>
+        <button id="counter-btn">Increment</button>
+        <p id="counter"></p>
+      </section>
+    </main>
+  </body>
+</html>
