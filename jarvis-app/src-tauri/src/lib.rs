@@ -259,6 +259,7 @@ pub fn run() {
             commands::delete_gem,
             commands::get_gem,
             commands::enrich_gem,
+            commands::transcribe_gem,
             commands::check_intel_availability,
             commands::check_mlx_dependencies,
             commands::filter_gems_by_tag,

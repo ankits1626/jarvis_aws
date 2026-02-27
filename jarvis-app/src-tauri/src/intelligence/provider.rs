@@ -10,6 +10,13 @@ pub struct AvailabilityResult {
     pub reason: Option<String>,
 }
 
+/// Result of transcript generation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscriptResult {
+    pub language: String,
+    pub transcript: String,
+}
+
 /// Backend-agnostic intelligence provider interface
 /// 
 /// This trait abstracts the intelligence backend, enabling swappable implementations
@@ -31,4 +38,21 @@ pub trait IntelProvider: Send + Sync {
     /// 
     /// Returns a single sentence capturing the key idea.
     async fn summarize(&self, content: &str) -> Result<String, String>;
+    
+    /// Generate transcript from audio file
+    /// 
+    /// Processes an audio file and returns a transcript with detected language.
+    /// Default implementation returns error for providers that don't support transcription.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `audio_path` - Path to the audio file (.wav or .pcm format)
+    /// 
+    /// # Returns
+    /// 
+    /// * `Ok(TranscriptResult)` - Transcript with detected language
+    /// * `Err(String)` - Error message if transcription fails or is not supported
+    async fn generate_transcript(&self, _audio_path: &std::path::Path) -> Result<TranscriptResult, String> {
+        Err("Transcript generation not supported by this provider".to_string())
+    }
 }

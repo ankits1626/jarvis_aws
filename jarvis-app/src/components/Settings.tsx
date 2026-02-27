@@ -340,7 +340,7 @@ export function Settings({ onClose }: SettingsProps) {
     }
   };
 
-  const handleEngineChange = async (engine: "whisper-rs" | "whisperkit") => {
+  const handleEngineChange = async (engine: "whisper-rs" | "whisperkit" | "mlx-omni") => {
     try {
       const updatedSettings = {
         ...settings,
@@ -398,8 +398,12 @@ export function Settings({ onClose }: SettingsProps) {
   const handleLlmModelSwitch = async (modelId: string) => {
     try {
       await invoke('switch_llm_model', { modelId });
-      // Refresh model list after switch
-      const llmModelsData = await invoke<LlmModelInfo[]>('list_llm_models');
+      // Refresh settings (active_model changed) and model list
+      const [updatedSettings, llmModelsData] = await Promise.all([
+        invoke<Settings>('get_settings'),
+        invoke<LlmModelInfo[]>('list_llm_models'),
+      ]);
+      setSettings(updatedSettings);
       setLlmModels(llmModelsData);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -440,6 +444,16 @@ export function Settings({ onClose }: SettingsProps) {
                 <span className="engine-reason"> — {whisperKitStatus.reason}</span>
               )}
             </label>
+            <label className="engine-option">
+              <input
+                type="radio"
+                name="engine"
+                value="mlx-omni"
+                checked={settings.transcription.transcription_engine === "mlx-omni"}
+                onChange={() => handleEngineChange("mlx-omni")}
+              />
+              <span>MLX Omni (Local, Private)</span>
+            </label>
           </div>
           {!whisperKitStatus?.available && (
             <div className="whisperkit-install-info">
@@ -450,7 +464,181 @@ export function Settings({ onClose }: SettingsProps) {
               </button>
             </div>
           )}
-          <p className="engine-note">Engine changes take effect after app restart.</p>
+          <p className="engine-note">
+            {settings.transcription.transcription_engine === "mlx-omni" 
+              ? "Real-time transcription during recording still uses Whisper for instant feedback. MLX Omni provides accurate multilingual transcripts after recording completes."
+              : "Engine changes take effect after app restart."}
+          </p>
+
+          {settings.transcription.transcription_engine === "mlx-omni" && (
+            <div className="multimodal-models-panel" style={{
+              marginTop: '16px',
+              padding: '16px',
+              backgroundColor: '#f8f9fa',
+              border: '1px solid #dee2e6',
+              borderRadius: '4px'
+            }}>
+              <h4 style={{ marginTop: 0, marginBottom: '12px' }}>Multimodal Models</h4>
+              
+              {/* Venv status indicator */}
+              {mlxDiagnostics && mlxDiagnostics.venv_status === 'ready' && (
+                <div style={{
+                  padding: '8px 12px',
+                  marginBottom: '12px',
+                  backgroundColor: '#d4edda',
+                  border: '1px solid #c3e6cb',
+                  borderRadius: '4px',
+                  color: '#155724',
+                  fontSize: '13px'
+                }}>
+                  ✓ Venv Ready
+                </div>
+              )}
+              
+              {mlxDiagnostics && mlxDiagnostics.venv_status !== 'ready' && (
+                <div style={{
+                  padding: '8px 12px',
+                  marginBottom: '12px',
+                  backgroundColor: '#fff3cd',
+                  border: '1px solid #ffc107',
+                  borderRadius: '4px',
+                  color: '#856404',
+                  fontSize: '13px'
+                }}>
+                  ⚠ Venv needs setup (see MLX Models section below)
+                </div>
+              )}
+
+              {/* Filter multimodal models (those with "audio" capability) */}
+              {llmModels.filter(m => m.capabilities?.includes('audio')).length === 0 ? (
+                <p style={{ margin: 0, color: '#6c757d', fontSize: '14px' }}>
+                  Download a multimodal model to enable MLX transcription
+                </p>
+              ) : (
+                <div className="multimodal-model-list">
+                  {llmModels
+                    .filter(m => m.capabilities?.includes('audio'))
+                    .map(model => (
+                      <div
+                        key={model.id}
+                        className="multimodal-model-card"
+                        style={{
+                          padding: '12px',
+                          marginBottom: '8px',
+                          backgroundColor: 'white',
+                          border: model.id === settings.transcription.mlx_omni_model ? '2px solid #007bff' : '1px solid #dee2e6',
+                          borderRadius: '4px',
+                          cursor: model.status.type === 'downloaded' ? 'pointer' : 'default'
+                        }}
+                        onClick={() => {
+                          if (model.status.type === 'downloaded' && model.id !== settings.transcription.mlx_omni_model) {
+                            // Update mlx_omni_model setting
+                            const updatedSettings = {
+                              ...settings,
+                              transcription: {
+                                ...settings.transcription,
+                                mlx_omni_model: model.id,
+                              },
+                            };
+                            invoke('update_settings', { settings: updatedSettings }).catch(err => {
+                              setError(err instanceof Error ? err.message : String(err));
+                            });
+                          }
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <input
+                                type="radio"
+                                name="mlx-omni-model"
+                                checked={model.id === settings.transcription.mlx_omni_model}
+                                disabled={model.status.type !== 'downloaded'}
+                                onChange={() => {}}
+                                style={{ margin: 0 }}
+                              />
+                              <strong style={{ fontSize: '14px' }}>{model.display_name}</strong>
+                              {model.id === settings.transcription.mlx_omni_model && model.status.type === 'downloaded' && (
+                                <span style={{
+                                  padding: '2px 8px',
+                                  backgroundColor: '#007bff',
+                                  color: 'white',
+                                  borderRadius: '3px',
+                                  fontSize: '11px',
+                                  fontWeight: 'bold'
+                                }}>
+                                  ACTIVE
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ fontSize: '12px', color: '#6c757d', marginTop: '4px', marginLeft: '24px' }}>
+                              {model.size_estimate} • {model.quality_tier} quality
+                            </div>
+                            <div style={{ fontSize: '12px', color: '#6c757d', marginLeft: '24px' }}>
+                              {model.description}
+                            </div>
+                          </div>
+                          <div>
+                            {model.status.type === 'not_downloaded' && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  invoke('download_llm_model', { modelId: model.id }).catch(err => {
+                                    setError(err instanceof Error ? err.message : String(err));
+                                  });
+                                  setLlmModels(prev =>
+                                    prev.map(m =>
+                                      m.id === model.id
+                                        ? { ...m, status: { type: 'downloading', progress: 0 } }
+                                        : m
+                                    )
+                                  );
+                                }}
+                                style={{
+                                  padding: '6px 12px',
+                                  backgroundColor: '#007bff',
+                                  color: 'white',
+                                  border: 'none',
+                                  borderRadius: '4px',
+                                  cursor: 'pointer',
+                                  fontSize: '12px'
+                                }}
+                              >
+                                Download
+                              </button>
+                            )}
+                            {model.status.type === 'downloading' && (
+                              <div style={{ textAlign: 'right' }}>
+                                <div style={{ fontSize: '12px', color: '#6c757d', marginBottom: '4px' }}>
+                                  {Math.round(model.status.progress)}%
+                                </div>
+                                <div style={{
+                                  width: '100px',
+                                  height: '4px',
+                                  backgroundColor: '#e9ecef',
+                                  borderRadius: '2px',
+                                  overflow: 'hidden'
+                                }}>
+                                  <div style={{
+                                    width: `${model.status.progress}%`,
+                                    height: '100%',
+                                    backgroundColor: '#007bff',
+                                    transition: 'width 0.3s ease'
+                                  }} />
+                                </div>
+                              </div>
+                            )}
+                            {model.status.type === 'downloaded' && model.id !== settings.transcription.mlx_omni_model && (
+                              <span style={{ fontSize: '12px', color: '#28a745' }}>✓ Downloaded</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          )}
         </section>
 
         <section className="settings-section">
@@ -620,7 +808,7 @@ export function Settings({ onClose }: SettingsProps) {
                     Using: {mlxDiagnostics.venv_python_path}
                   </small>
                 )}
-                {llmModels.every(m => m.status.type === 'not_downloaded') && (
+                {llmModels.filter(m => m.capabilities?.includes('text')).every(m => m.status.type === 'not_downloaded') && (
                   <span style={{ display: 'block', marginTop: '4px' }}>
                     <strong>No models downloaded yet.</strong> Download a model below to enable AI enrichment.
                   </span>
@@ -629,14 +817,16 @@ export function Settings({ onClose }: SettingsProps) {
             )}
 
             <ModelList
-              models={llmModels.map(m => ({
-                filename: m.id,
-                display_name: m.display_name,
-                description: m.description,
-                size_estimate: m.size_estimate,
-                quality_tier: m.quality_tier,
-                status: m.status,
-              }))}
+              models={llmModels
+                .filter(m => m.capabilities?.includes('text'))
+                .map(m => ({
+                  filename: m.id,
+                  display_name: m.display_name,
+                  description: m.description,
+                  size_estimate: m.size_estimate,
+                  quality_tier: m.quality_tier,
+                  status: m.status,
+                }))}
               selectedModel={settings.intelligence.active_model}
               onModelSelected={async () => {
                 try {

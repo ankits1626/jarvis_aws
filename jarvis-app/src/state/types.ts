@@ -195,11 +195,14 @@ export interface TranscriptionSettings {
   /** Whisper model filename (e.g., "ggml-base.en.bin") */
   whisper_model: string;
   
-  /** Transcription engine: "whisper-rs" (whisper.cpp) or "whisperkit" (Apple Neural Engine) */
-  transcription_engine: "whisper-rs" | "whisperkit";
+  /** Transcription engine: "whisper-rs" (whisper.cpp), "whisperkit" (Apple Neural Engine), or "mlx-omni" (MLX multimodal) */
+  transcription_engine: "whisper-rs" | "whisperkit" | "mlx-omni";
   
   /** WhisperKit model name (e.g., "openai_whisper-large-v3_turbo") */
   whisperkit_model: string;
+
+  /** MLX Omni model catalog ID (e.g., "qwen-omni-3b-8bit") for post-recording transcription */
+  mlx_omni_model: string;
 
   /** Audio window duration in seconds (1.0 to 10.0) for batch transcription */
   window_duration: number;
@@ -303,6 +306,9 @@ export interface LlmModelInfo {
   
   /** Current status of the model */
   status: ModelStatus;
+  
+  /** Model capabilities (e.g., ["text"], ["audio", "text"]) */
+  capabilities: string[];
 }
 
 /** Payload for llm-model-download-progress event */
@@ -476,6 +482,12 @@ export interface Gem {
     /** ISO 8601 timestamp when enrichment was generated */
     enriched_at: string;
   } | null;
+  
+  /** MLX Omni-generated transcript (separate from Whisper real-time transcript) */
+  transcript: string | null;
+  
+  /** Language detected by MLX Omni during transcription (ISO 639-1 code) */
+  transcript_language: string | null;
 }
 
 /** Lightweight gem for list/search results matching Rust GemPreview struct */
@@ -515,6 +527,9 @@ export interface GemPreview {
 
   /** Source of enrichment, e.g. "mlx / qwen3-8b-4bit" (extracted from ai_enrichment) */
   enrichment_source: string | null;
+  
+  /** Language detected by MLX Omni during transcription (ISO 639-1 code) */
+  transcript_language: string | null;
 }
 
 /**

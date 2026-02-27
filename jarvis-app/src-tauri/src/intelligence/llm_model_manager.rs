@@ -22,6 +22,7 @@ struct LlmModelEntry {
     description: &'static str,
     size_estimate: &'static str,
     quality_tier: &'static str,
+    capabilities: &'static [&'static str],
 }
 
 /// Information about an LLM model (returned to frontend)
@@ -34,6 +35,7 @@ pub struct LlmModelInfo {
     pub size_estimate: String,
     pub quality_tier: String,
     pub status: ModelStatus,
+    pub capabilities: Vec<String>,
 }
 
 /// Internal state for an in-progress download
@@ -65,6 +67,7 @@ impl LlmModelManager {
             description: "Fast and lightweight. Good for quick tasks.",
             size_estimate: "~2 GB",
             quality_tier: "basic",
+            capabilities: &["text"],
         },
         LlmModelEntry {
             id: "qwen3-4b-4bit",
@@ -73,6 +76,7 @@ impl LlmModelManager {
             description: "Compact and efficient. Good balance for smaller machines.",
             size_estimate: "~3 GB",
             quality_tier: "good",
+            capabilities: &["text"],
         },
         LlmModelEntry {
             id: "qwen3-8b-4bit",
@@ -81,6 +85,7 @@ impl LlmModelManager {
             description: "Great quality, balanced performance. Recommended.",
             size_estimate: "~5 GB",
             quality_tier: "great",
+            capabilities: &["text"],
         },
         LlmModelEntry {
             id: "qwen3-14b-4bit",
@@ -89,6 +94,25 @@ impl LlmModelManager {
             description: "Highest quality. Needs 16GB+ RAM.",
             size_estimate: "~9 GB",
             quality_tier: "best",
+            capabilities: &["text"],
+        },
+        LlmModelEntry {
+            id: "qwen-omni-3b-8bit",
+            repo_id: "giangndm/qwen2.5-omni-3b-mlx-8bit",
+            display_name: "Qwen 2.5 Omni 3B (8-bit)",
+            description: "Multilingual audio transcription + text generation",
+            size_estimate: "~5 GB",
+            quality_tier: "good",
+            capabilities: &["audio", "text"],
+        },
+        LlmModelEntry {
+            id: "qwen-omni-7b-4bit",
+            repo_id: "giangndm/qwen2.5-omni-7b-mlx-4bit",
+            display_name: "Qwen 2.5 Omni 7B (4-bit)",
+            description: "Higher quality multilingual transcription + text",
+            size_estimate: "~8 GB",
+            quality_tier: "better",
+            capabilities: &["audio", "text"],
         },
     ];
 
@@ -178,6 +202,7 @@ impl LlmModelManager {
                 size_estimate: entry.size_estimate.to_string(),
                 quality_tier: entry.quality_tier.to_string(),
                 status,
+                capabilities: entry.capabilities.iter().map(|s| s.to_string()).collect(),
             });
         }
 

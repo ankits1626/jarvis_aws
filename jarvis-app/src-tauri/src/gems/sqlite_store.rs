@@ -88,29 +88,65 @@ impl SqliteGemStore {
                 .map_err(|e| format!("Failed to drop gems_au trigger: {}", e))?;
         }
         
+        // Migration: Add transcript column if it doesn't exist
+        if !columns.contains(&"transcript".to_string()) {
+            conn.execute("ALTER TABLE gems ADD COLUMN transcript TEXT", [])
+                .map_err(|e| format!("Failed to add transcript column: {}", e))?;
+            // Drop old FTS table so it gets recreated with the transcript column
+            conn.execute("DROP TABLE IF EXISTS gems_fts", [])
+                .map_err(|e| format!("Failed to drop old FTS table: {}", e))?;
+        }
+
+        // Migration: Add transcript_language column if it doesn't exist
+        if !columns.contains(&"transcript_language".to_string()) {
+            conn.execute("ALTER TABLE gems ADD COLUMN transcript_language TEXT", [])
+                .map_err(|e| format!("Failed to add transcript_language column: {}", e))?;
+        }
+
+        // Ensure FTS table schema is up-to-date (handles case where transcript column
+        // was added to gems table but FTS wasn't recreated)
+        let fts_needs_rebuild: bool = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='gems_fts'",
+            [],
+            |row| row.get::<_, String>(0),
+        ).ok().map_or(false, |sql| !sql.contains("transcript"));
+
+        if fts_needs_rebuild {
+            conn.execute("DROP TABLE IF EXISTS gems_fts", [])
+                .map_err(|e| format!("Failed to drop outdated FTS table: {}", e))?;
+        }
+
         // FTS5 virtual table for full-text search
         conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS gems_fts USING fts5(
                 title,
                 description,
                 content,
+                transcript,
                 content=gems,
                 content_rowid=rowid
             )",
             [],
         ).map_err(|e| format!("Failed to create FTS5 table: {}", e))?;
-        
+
+        // Rebuild FTS index if we had to drop an outdated FTS table
+        if fts_needs_rebuild {
+            conn.execute("INSERT INTO gems_fts(gems_fts) VALUES('rebuild')", [])
+                .map_err(|e| format!("Failed to rebuild FTS index: {}", e))?;
+        }
+
         // Triggers to keep FTS5 in sync (always recreate to ensure they have the latest logic)
         conn.execute("DROP TRIGGER IF EXISTS gems_ai", [])
             .map_err(|e| format!("Failed to drop gems_ai trigger: {}", e))?;
         conn.execute(
             "CREATE TRIGGER gems_ai AFTER INSERT ON gems BEGIN
-                INSERT INTO gems_fts(rowid, title, description, content)
+                INSERT INTO gems_fts(rowid, title, description, content, transcript)
                 VALUES (
                     new.rowid,
                     new.title,
                     new.description,
-                    COALESCE(new.content, '') || ' ' || COALESCE(json_extract(new.ai_enrichment, '$.summary'), '')
+                    COALESCE(new.content, '') || ' ' || COALESCE(json_extract(new.ai_enrichment, '$.summary'), ''),
+                    COALESCE(new.transcript, '')
                 );
             END",
             [],
@@ -120,13 +156,14 @@ impl SqliteGemStore {
             .map_err(|e| format!("Failed to drop gems_ad trigger: {}", e))?;
         conn.execute(
             "CREATE TRIGGER gems_ad AFTER DELETE ON gems BEGIN
-                INSERT INTO gems_fts(gems_fts, rowid, title, description, content)
+                INSERT INTO gems_fts(gems_fts, rowid, title, description, content, transcript)
                 VALUES(
                     'delete',
                     old.rowid,
                     old.title,
                     old.description,
-                    COALESCE(old.content, '') || ' ' || COALESCE(json_extract(old.ai_enrichment, '$.summary'), '')
+                    COALESCE(old.content, '') || ' ' || COALESCE(json_extract(old.ai_enrichment, '$.summary'), ''),
+                    COALESCE(old.transcript, '')
                 );
             END",
             [],
@@ -136,20 +173,22 @@ impl SqliteGemStore {
             .map_err(|e| format!("Failed to drop gems_au trigger: {}", e))?;
         conn.execute(
             "CREATE TRIGGER gems_au AFTER UPDATE ON gems BEGIN
-                INSERT INTO gems_fts(gems_fts, rowid, title, description, content)
+                INSERT INTO gems_fts(gems_fts, rowid, title, description, content, transcript)
                 VALUES(
                     'delete',
                     old.rowid,
                     old.title,
                     old.description,
-                    COALESCE(old.content, '') || ' ' || COALESCE(json_extract(old.ai_enrichment, '$.summary'), '')
+                    COALESCE(old.content, '') || ' ' || COALESCE(json_extract(old.ai_enrichment, '$.summary'), ''),
+                    COALESCE(old.transcript, '')
                 );
-                INSERT INTO gems_fts(rowid, title, description, content)
+                INSERT INTO gems_fts(rowid, title, description, content, transcript)
                 VALUES (
                     new.rowid,
                     new.title,
                     new.description,
-                    COALESCE(new.content, '') || ' ' || COALESCE(json_extract(new.ai_enrichment, '$.summary'), '')
+                    COALESCE(new.content, '') || ' ' || COALESCE(json_extract(new.ai_enrichment, '$.summary'), ''),
+                    COALESCE(new.transcript, '')
                 );
             END",
             [],
@@ -182,6 +221,8 @@ impl SqliteGemStore {
                 .unwrap_or(serde_json::Value::Null),
             captured_at: row.get(9)?,
             ai_enrichment,
+            transcript: row.get(11)?,
+            transcript_language: row.get(12)?,
         })
     }
     
@@ -231,6 +272,7 @@ impl SqliteGemStore {
             tags,
             summary,
             enrichment_source,
+            transcript_language: gem.transcript_language.clone(),
         }
     }
 }
@@ -247,8 +289,8 @@ impl GemStore for SqliteGemStore {
         
         conn.execute(
             "INSERT INTO gems (id, source_type, source_url, domain, title, author, 
-                description, content, source_meta, captured_at, ai_enrichment)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                description, content, source_meta, captured_at, ai_enrichment, transcript, transcript_language)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             ON CONFLICT(source_url) DO UPDATE SET
                 title = excluded.title,
                 author = excluded.author,
@@ -256,7 +298,9 @@ impl GemStore for SqliteGemStore {
                 content = excluded.content,
                 source_meta = excluded.source_meta,
                 captured_at = excluded.captured_at,
-                ai_enrichment = excluded.ai_enrichment",
+                ai_enrichment = excluded.ai_enrichment,
+                transcript = excluded.transcript,
+                transcript_language = excluded.transcript_language",
             params![
                 gem.id,
                 gem.source_type,
@@ -269,13 +313,15 @@ impl GemStore for SqliteGemStore {
                 gem.source_meta.to_string(),
                 gem.captured_at,
                 ai_enrichment_str,
+                gem.transcript,
+                gem.transcript_language,
             ],
         ).map_err(|e| format!("Failed to save gem: {}", e))?;
         
         // Query back the actual row to get the correct ID (in case of conflict, the original ID is kept)
         let mut stmt = conn.prepare(
             "SELECT id, source_type, source_url, domain, title, author, 
-                description, content, source_meta, captured_at, ai_enrichment
+                description, content, source_meta, captured_at, ai_enrichment, transcript, transcript_language
             FROM gems WHERE source_url = ?1"
         ).map_err(|e| format!("Failed to prepare query: {}", e))?;
         
@@ -291,7 +337,7 @@ impl GemStore for SqliteGemStore {
         
         let mut stmt = conn.prepare(
             "SELECT id, source_type, source_url, domain, title, author, 
-                description, content, source_meta, captured_at, ai_enrichment
+                description, content, source_meta, captured_at, ai_enrichment, transcript, transcript_language
             FROM gems WHERE id = ?1"
         ).map_err(|e| format!("Failed to prepare query: {}", e))?;
         
@@ -312,7 +358,7 @@ impl GemStore for SqliteGemStore {
         // Current approach prioritizes correctness over performance.
         let mut stmt = conn.prepare(
             "SELECT id, source_type, source_url, domain, title, author, 
-                description, content, source_meta, captured_at, ai_enrichment
+                description, content, source_meta, captured_at, ai_enrichment, transcript, transcript_language
             FROM gems
             ORDER BY captured_at DESC
             LIMIT ?1 OFFSET ?2"
@@ -338,7 +384,7 @@ impl GemStore for SqliteGemStore {
         // NOTE: Same performance consideration as list() - fetches full content for truncation.
         let mut stmt = conn.prepare(
             "SELECT g.id, g.source_type, g.source_url, g.domain, g.title, g.author,
-                g.description, g.content, g.source_meta, g.captured_at, g.ai_enrichment
+                g.description, g.content, g.source_meta, g.captured_at, g.ai_enrichment, g.transcript, g.transcript_language
             FROM gems g
             INNER JOIN gems_fts fts ON g.rowid = fts.rowid
             WHERE gems_fts MATCH ?1
@@ -384,7 +430,7 @@ impl GemStore for SqliteGemStore {
         
         let mut stmt = conn.prepare(
             "SELECT DISTINCT g.id, g.source_type, g.source_url, g.domain, g.title, g.author,
-                g.description, g.content, g.source_meta, g.captured_at, g.ai_enrichment
+                g.description, g.content, g.source_meta, g.captured_at, g.ai_enrichment, g.transcript, g.transcript_language
              FROM gems g, json_each(json_extract(g.ai_enrichment, '$.tags'))
              WHERE json_each.value = ?1
              ORDER BY g.captured_at DESC

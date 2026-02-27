@@ -1840,6 +1840,15 @@ h1 {
   color: #666;
 }
 
+.gem-lang-badge {
+  background-color: #e8f5e9;
+  color: #2e7d32;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 500;
+}
+
 .gem-description {
   font-size: 13px;
   color: #555;

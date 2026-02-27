@@ -7,6 +7,7 @@ use crate::settings::{ModelManager, Settings, SettingsManager};
 use crate::transcription::{TranscriptionManager, TranscriptionSegment, TranscriptionStatus, WhisperKitProvider};
 use crate::wav::WavConverter;
 use serde::Serialize;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use tauri::{Emitter, State};
 
@@ -50,35 +51,99 @@ fn page_gist_to_gem(gist: crate::browser::extractors::PageGist) -> Gem {
         source_meta,
         captured_at: chrono::Utc::now().to_rfc3339(),
         ai_enrichment: None,
+        transcript: None,
+        transcript_language: None,
     }
 }
 
-/// Helper function to enrich content with AI-generated metadata
+/// Helper function to extract recording file path from a gem
+///
+/// This function checks if a gem is a recording and extracts the audio file path.
+/// Recording gems have source_type "Recording" and store the filename in source_meta.
+///
+/// # Arguments
+///
+/// * `gem` - The gem to extract the recording path from
+///
+/// # Returns
+///
+/// * `Some(PathBuf)` - Full path to the recording file if gem is a recording
+/// * `None` - If gem is not a recording or filename is missing
+fn extract_recording_path(gem: &Gem) -> Option<PathBuf> {
+    // Detect recording gems by presence of recording filename in source_meta
+    // (NOT by source_type — recordings are saved with source_type "Other")
+    let filename = gem.source_meta.get("recording_filename")
+        .or_else(|| gem.source_meta.get("filename"))
+        .or_else(|| gem.source_meta.get("recording_path"))
+        .or_else(|| gem.source_meta.get("file"))
+        .or_else(|| gem.source_meta.get("path"))
+        .and_then(|v| v.as_str())?;
+
+    // Build full path using the same location as FileManager:
+    // dirs::data_dir()/com.jarvis.app/recordings/{filename}
+    let data_dir = dirs::data_dir()?;
+    Some(data_dir.join("com.jarvis.app").join("recordings").join(filename))
+}
+
+/// Result of content enrichment including AI-generated metadata and optional transcript
+struct EnrichmentResult {
+    ai_enrichment: serde_json::Value,
+    transcript: Option<String>,
+    transcript_language: Option<String>,
+}
+
+/// Helper function to enrich content with AI-generated metadata and optional transcript
 /// 
-/// This function calls the IntelProvider to generate tags and a summary
-/// for the given content, then builds the ai_enrichment JSON structure.
+/// This function calls the IntelProvider to generate tags, summary, and optionally
+/// a transcript (for recording gems). It builds the complete enrichment result.
 /// 
 /// # Arguments
 /// 
 /// * `provider` - The IntelProvider trait object
-/// * `content` - The content to enrich
+/// * `content` - The content to enrich (for tags/summary)
+/// * `gem` - The full gem (to extract recording path for transcript)
 /// * `provider_name` - The name of the provider being used
+/// * `model_name` - Optional model name (for MLX provider)
+/// * `transcription_engine` - The transcription engine setting ("whisper-rs", "whisperkit", "mlx-omni")
 /// 
 /// # Returns
 /// 
-/// * `Ok(serde_json::Value)` - The ai_enrichment JSON with tags, summary, provider, enriched_at
+/// * `Ok(EnrichmentResult)` - The enrichment result with ai_enrichment JSON and optional transcript
 /// * `Err(String)` - Error message if enrichment fails
 async fn enrich_content(
     provider: &dyn IntelProvider,
     content: &str,
+    gem: &Gem,
     provider_name: &str,
     model_name: Option<&str>,
-) -> Result<serde_json::Value, String> {
+    transcription_engine: &str,
+) -> Result<EnrichmentResult, String> {
+    // Generate transcript first (if applicable) so we can use it for tags/summary
+    let (transcript, transcript_language) = if transcription_engine == "mlx-omni" {
+        if let Some(recording_path) = extract_recording_path(gem) {
+            match provider.generate_transcript(&recording_path).await {
+                Ok(result) => (Some(result.transcript), Some(result.language)),
+                Err(e) => {
+                    eprintln!("Failed to generate transcript for {}: {}",
+                        recording_path.display(), e);
+                    (None, None)
+                }
+            }
+        } else {
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
+
+    // Use MLX Omni transcript for tags/summary if available (more accurate than Whisper real-time)
+    let text_for_enrichment = transcript.as_deref().unwrap_or(content);
+
     // Generate tags
-    let tags = provider.generate_tags(content).await?;
+    let tags = provider.generate_tags(text_for_enrichment).await?;
 
     // Generate summary
-    let summary = provider.summarize(content).await?;
+    let summary = provider.summarize(text_for_enrichment).await?;
 
     // Build ai_enrichment JSON
     let mut ai_enrichment = serde_json::json!({
@@ -88,12 +153,15 @@ async fn enrich_content(
         "enriched_at": chrono::Utc::now().to_rfc3339(),
     });
 
-    // Add model name if available (MLX provider has an active model)
     if let Some(model) = model_name {
         ai_enrichment["model"] = serde_json::Value::String(model.to_string());
     }
 
-    Ok(ai_enrichment)
+    Ok(EnrichmentResult {
+        ai_enrichment,
+        transcript,
+        transcript_language,
+    })
 }
 
 /// Save a PageGist as a Gem
@@ -171,11 +239,15 @@ pub async fn save_gem(
     
     if availability.available {
         // Get provider name and model from settings
-        let (provider_name, model_name) = {
+        let (provider_name, model_name, transcription_engine) = {
             let manager = settings_manager.read()
                 .map_err(|e| format!("Failed to acquire settings lock: {}", e))?;
             let s = manager.get();
-            (s.intelligence.provider.clone(), s.intelligence.active_model.clone())
+            (
+                s.intelligence.provider.clone(), 
+                s.intelligence.active_model.clone(),
+                s.transcription.transcription_engine.clone()
+            )
         };
         let model_ref = if provider_name == "mlx" { Some(model_name.as_str()) } else { None };
 
@@ -186,9 +258,11 @@ pub async fn save_gem(
 
         if let Some(content) = content_to_enrich {
             // Try to enrich, but don't fail the save if enrichment fails
-            match enrich_content(&**intel_provider, content, &provider_name, model_ref).await {
-                Ok(ai_enrichment) => {
-                    gem.ai_enrichment = Some(ai_enrichment);
+            match enrich_content(&**intel_provider, content, &gem, &provider_name, model_ref, &transcription_engine).await {
+                Ok(enrichment_result) => {
+                    gem.ai_enrichment = Some(enrichment_result.ai_enrichment);
+                    gem.transcript = enrichment_result.transcript;
+                    gem.transcript_language = enrichment_result.transcript_language;
                 }
                 Err(e) => {
                     // Log error but continue with save
@@ -516,11 +590,15 @@ pub async fn enrich_gem(
     }
     
     // Get provider name and model from settings
-    let (provider_name, model_name) = {
+    let (provider_name, model_name, transcription_engine) = {
         let manager = settings_manager.read()
             .map_err(|e| format!("Failed to acquire settings lock: {}", e))?;
         let s = manager.get();
-        (s.intelligence.provider.clone(), s.intelligence.active_model.clone())
+        (
+            s.intelligence.provider.clone(), 
+            s.intelligence.active_model.clone(),
+            s.transcription.transcription_engine.clone()
+        )
     };
     let model_ref = if provider_name == "mlx" { Some(model_name.as_str()) } else { None };
 
@@ -535,7 +613,7 @@ pub async fn enrich_gem(
         .ok_or_else(|| "Gem has no content or description to enrich".to_string())?;
 
     // Enrich the content
-    let ai_enrichment = match enrich_content(&**intel_provider, content_to_enrich, &provider_name, model_ref).await {
+    let enrichment_result = match enrich_content(&**intel_provider, content_to_enrich, &gem, &provider_name, model_ref, &transcription_engine).await {
         Ok(enrichment) => enrichment,
         Err(e) => {
             // Check if error indicates sidecar crash (broken pipe)
@@ -550,8 +628,95 @@ pub async fn enrich_gem(
     };
     
     // Update gem with enrichment
-    gem.ai_enrichment = Some(ai_enrichment);
+    gem.ai_enrichment = Some(enrichment_result.ai_enrichment);
+    gem.transcript = enrichment_result.transcript;
+    gem.transcript_language = enrichment_result.transcript_language;
     
+    // Save and return
+    gem_store.save(gem).await
+}
+
+/// Transcribe a recording gem and regenerate tags/summary from the transcript
+///
+/// This command generates an accurate transcript for a specific recording gem,
+/// then regenerates tags and summary based on that transcript (which is more
+/// accurate than the Whisper real-time content).
+///
+/// # Arguments
+///
+/// * `id` - The unique identifier of the gem to transcribe
+///
+/// # Returns
+///
+/// * `Ok(Gem)` - The updated gem with transcript, tags, and summary
+/// * `Err(String)` - Error message if transcription fails
+#[tauri::command]
+pub async fn transcribe_gem(
+    id: String,
+    gem_store: State<'_, Arc<dyn GemStore>>,
+    intel_provider: State<'_, Arc<dyn IntelProvider>>,
+    settings_manager: State<'_, Arc<RwLock<SettingsManager>>>,
+) -> Result<Gem, String> {
+    // Check availability first
+    let availability = intel_provider.check_availability().await;
+    if !availability.available {
+        return Err(format!(
+            "AI provider not available: {}",
+            availability.reason.unwrap_or_else(|| "Unknown reason".to_string())
+        ));
+    }
+
+    // Fetch gem by ID
+    let mut gem = gem_store.get(&id).await?
+        .ok_or_else(|| format!("Gem with id '{}' not found", id))?;
+
+    // Extract recording path from source_meta
+    let recording_path = extract_recording_path(&gem)
+        .ok_or_else(|| "This gem has no associated recording file".to_string())?;
+
+    // Verify recording file exists on disk
+    if !recording_path.exists() {
+        return Err(format!("Recording file not found: {}", recording_path.display()));
+    }
+
+    // Generate transcript
+    let result = intel_provider.generate_transcript(&recording_path).await
+        .map_err(|e| {
+            if e.contains("not supported") {
+                "Current AI provider does not support transcription".to_string()
+            } else {
+                e
+            }
+        })?;
+
+    gem.transcript = Some(result.transcript);
+    gem.transcript_language = Some(result.language);
+
+    // Regenerate tags/summary from the accurate transcript
+    let transcript_text = gem.transcript.as_deref().unwrap_or("");
+    if !transcript_text.is_empty() {
+        let (provider_name, model_name) = {
+            let manager = settings_manager.read()
+                .map_err(|e| format!("Failed to acquire settings lock: {}", e))?;
+            let s = manager.get();
+            (s.intelligence.provider.clone(), s.intelligence.active_model.clone())
+        };
+
+        let tags = intel_provider.generate_tags(transcript_text).await.unwrap_or_default();
+        let summary = intel_provider.summarize(transcript_text).await.unwrap_or_default();
+
+        let mut ai_enrichment = serde_json::json!({
+            "tags": tags,
+            "summary": summary,
+            "provider": provider_name,
+            "enriched_at": chrono::Utc::now().to_rfc3339(),
+        });
+        if provider_name == "mlx" {
+            ai_enrichment["model"] = serde_json::Value::String(model_name);
+        }
+        gem.ai_enrichment = Some(ai_enrichment);
+    }
+
     // Save and return
     gem_store.save(gem).await
 }

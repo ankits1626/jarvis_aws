@@ -177,10 +177,38 @@ numpy>=1.24.0
 huggingface-hub>=0.20.0
 ```
 
-Note: `mlx-lm-omni` needs our patches. Options:
-1. Fork and publish patched version
-2. Ship patched files alongside the sidecar
-3. Submit PR upstream and wait for merge
+### Handling `mlx-lm-omni` Patches
+
+We found 6 bugs in `mlx-lm-omni` v0.1.3 that must be fixed for Jarvis to work.
+Users can't be asked to manually patch files in their venv. Options:
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **A: Runtime monkey-patch in server.py** | No fork needed, no file copying, self-contained | Fragile if upstream changes internals, ugly |
+| **B: Ship patched files, overwrite after pip install** | Clean files, easy to diff against upstream | Breaks on upstream version bumps, extra build step |
+| **C: Fork on PyPI** (e.g. `mlx-lm-omni-patched`) | Clean install, proper versioning | Maintenance burden, need to track upstream |
+| **D: Submit PR upstream + pin version** | Best long-term, no maintenance | Blocked on upstream review/merge timeline |
+
+**Recommended: A (runtime monkey-patch) now, D (upstream PR) in parallel.**
+
+Runtime patching in `server.py` before any model loading:
+```python
+# Patch 1: audio_tower.py — fix chunk processing order
+# Replace AudioTower.__call__ with corrected version
+# (reshape after transformer, not before)
+
+# Patch 2: audio_mel.py — float32 precision
+# Override mel_filters/waveform/window dtypes after AudioMel init
+
+# Patch 3: tokenizer.py — mlx 0.30 compat
+# Replace to_quantized() to accept **kwargs
+
+# Patch 4: model.py — tokenizer delegation
+# Add __getattr__ and chat_template property to Model class
+```
+
+This keeps `pip install mlx-lm-omni` standard, and all fixes live in our `server.py`.
+When upstream merges our PRs, we remove the patches and bump the version pin.
 
 ### Rust Side: Extend existing `intelligence/mlx_provider.rs`
 

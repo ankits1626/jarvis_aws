@@ -24,6 +24,8 @@ pub struct TranscriptionSettings {
     pub transcription_engine: String,
     #[serde(default = "default_whisperkit_model")]
     pub whisperkit_model: String,
+    #[serde(default = "default_mlx_omni_model")]
+    pub mlx_omni_model: String,
     #[serde(default = "default_window_duration")]
     pub window_duration: f32,
 }
@@ -50,6 +52,10 @@ fn default_whisperkit_model() -> String {
     "openai_whisper-large-v3_turbo".to_string()
 }
 
+fn default_mlx_omni_model() -> String {
+    "qwen-omni-3b-8bit".to_string()
+}
+
 fn default_window_duration() -> f32 {
     3.0
 }
@@ -64,6 +70,7 @@ impl Default for TranscriptionSettings {
             whisper_model: "ggml-base.en.bin".to_string(),
             transcription_engine: default_engine(),
             whisperkit_model: default_whisperkit_model(),
+            mlx_omni_model: default_mlx_omni_model(),
             window_duration: default_window_duration(),
         }
     }
@@ -233,9 +240,9 @@ impl SettingsManager {
 
         // Validate transcription_engine
         let engine = settings.transcription.transcription_engine.as_str();
-        if engine != "whisper-rs" && engine != "whisperkit" {
+        if engine != "whisper-rs" && engine != "whisperkit" && engine != "mlx-omni" {
             return Err(format!(
-                "Transcription engine must be 'whisper-rs' or 'whisperkit', got '{}'",
+                "Transcription engine must be 'whisper-rs', 'whisperkit', or 'mlx-omni', got '{}'",
                 engine
             ));
         }

@@ -28,6 +28,10 @@ struct NdjsonCommand {
     repo_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     destination: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    audio_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capabilities: Option<Vec<String>>,
 }
 
 /// NDJSON response structure from MLX sidecar
@@ -51,6 +55,12 @@ struct NdjsonResponse {
     error: Option<String>,
     #[serde(default)]
     _param_count: Option<u64>,
+    #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
+    transcript: Option<String>,
+    #[serde(default)]
+    capabilities: Option<Vec<String>>,
 }
 
 /// MLX provider state
@@ -289,6 +299,8 @@ impl MlxProvider {
             content: None,
             repo_id: None,
             destination: None,
+            audio_path: None,
+            capabilities: None,
         };
 
         let response = self.send_command(cmd).await?;
@@ -308,12 +320,27 @@ impl MlxProvider {
 
     /// Load a model from disk
     async fn load_model_internal(&self, model_path: PathBuf) -> Result<(), String> {
+        // Look up model capabilities from catalog
+        // Extract model ID from path: ~/.jarvis/models/llm/Qwen3-8B-4bit → "Qwen3-8B-4bit"
+        let model_id = model_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("Invalid model path")?;
+        
+        // Map directory name to catalog ID
+        // The catalog uses kebab-case IDs like "qwen3-8b-4bit"
+        // The directory names from HuggingFace use PascalCase like "Qwen3-8B-4bit"
+        // We need to match them by converting to lowercase and comparing
+        let capabilities = Self::lookup_capabilities(model_id);
+        
         let cmd = NdjsonCommand {
             command: "load-model".to_string(),
             model_path: Some(model_path.to_string_lossy().to_string()),
             content: None,
             repo_id: None,
             destination: None,
+            audio_path: None,
+            capabilities: Some(capabilities),
         };
 
         let response = self.send_command(cmd).await?;
@@ -335,6 +362,41 @@ impl MlxProvider {
         }
 
         Ok(())
+    }
+    
+    /// Look up model capabilities from the catalog
+    /// 
+    /// This duplicates the catalog from LlmModelManager to avoid circular dependencies.
+    /// The catalog is small and static, so duplication is acceptable.
+    /// 
+    /// Matches against exact directory names derived from repo IDs to avoid false positives.
+    fn lookup_capabilities(model_dir_name: &str) -> Vec<String> {
+        // Map exact directory names to capabilities
+        // Directory names come from HuggingFace repo IDs (last segment after '/')
+        let model_lower = model_dir_name.to_lowercase();
+        
+        // Text-only models - match exact directory names
+        if model_lower == "llama-3.2-3b-instruct-4bit" || 
+           model_lower == "qwen3-4b-4bit" ||
+           model_lower == "qwen3-8b-4bit" ||
+           model_lower == "qwen3-14b-4bit" {
+            return vec!["text".to_string()];
+        }
+        
+        // Multimodal models (Qwen 2.5 Omni) - match exact directory names
+        if model_lower == "qwen2.5-omni-3b-mlx-8bit" || 
+           model_lower == "qwen2.5-omni-7b-mlx-4bit" {
+            return vec!["audio".to_string(), "text".to_string()];
+        }
+        
+        // Fallback: use contains() for partial matches (less precise but more flexible)
+        // This handles cases where directory names might vary slightly
+        if model_lower.contains("qwen") && model_lower.contains("omni") {
+            return vec!["audio".to_string(), "text".to_string()];
+        }
+        
+        // Default to text-only for unknown models
+        vec!["text".to_string()]
     }
 
     /// Switch to a different model
@@ -364,6 +426,8 @@ impl MlxProvider {
             content: None,
             repo_id: None,
             destination: None,
+            audio_path: None,
+            capabilities: None,
         };
 
         // Try to send shutdown command (ignore errors)
@@ -391,6 +455,8 @@ impl MlxProvider {
             content: Some(content.to_string()),
             repo_id: None,
             destination: None,
+            audio_path: None,
+            capabilities: None,
         };
 
         let response = self.send_command(cmd).await?;
@@ -420,6 +486,8 @@ impl MlxProvider {
             content: Some(content.to_string()),
             repo_id: None,
             destination: None,
+            audio_path: None,
+            capabilities: None,
         };
 
         let response = self.send_command(cmd).await?;
@@ -439,6 +507,36 @@ impl MlxProvider {
         }
 
         Ok(summary)
+    }
+
+    /// Generate transcript from audio file
+    async fn generate_transcript_internal(&self, audio_path: &std::path::Path) -> Result<super::provider::TranscriptResult, String> {
+        let cmd = NdjsonCommand {
+            command: "generate-transcript".to_string(),
+            model_path: None,
+            content: None,
+            repo_id: None,
+            destination: None,
+            audio_path: Some(audio_path.to_string_lossy().to_string()),
+            capabilities: None,
+        };
+
+        // Use 120s timeout for transcript generation (longer than tags/summary)
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            self.send_command(cmd)
+        )
+        .await
+        .map_err(|_| "Transcript generation timeout (120s)".to_string())??;
+
+        if response.response_type == "error" {
+            return Err(response.error.unwrap_or_else(|| "Transcript generation failed".to_string()));
+        }
+
+        let language = response.language.ok_or("No language in response")?;
+        let transcript = response.transcript.ok_or("No transcript in response")?;
+
+        Ok(super::provider::TranscriptResult { language, transcript })
     }
 }
 
@@ -535,5 +633,9 @@ impl IntelProvider for MlxProvider {
                 Ok(chunk_summaries.into_iter().next().unwrap())
             }
         }
+    }
+
+    async fn generate_transcript(&self, audio_path: &std::path::Path) -> Result<super::provider::TranscriptResult, String> {
+        self.generate_transcript_internal(audio_path).await
     }
 }

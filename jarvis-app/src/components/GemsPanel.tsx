@@ -42,6 +42,8 @@ function GemCard({
   const [audioError, setAudioError] = useState<string | null>(null);
   const [enriching, setEnriching] = useState(false);
   const [enrichError, setEnrichError] = useState<string | null>(null);
+  const [transcribing, setTranscribing] = useState(false);
+  const [transcribeError, setTranscribeError] = useState<string | null>(null);
   const [localGem, setLocalGem] = useState<GemPreview>(gem);
 
   // Update local gem when prop changes (e.g., after enrichment)
@@ -72,6 +74,32 @@ function GemCard({
       setEnrichError(String(err));
     } finally {
       setEnriching(false);
+    }
+  };
+
+  const handleTranscribe = async () => {
+    setTranscribing(true);
+    setTranscribeError(null);
+    try {
+      const updatedGem = await invoke<Gem>('transcribe_gem', { id: localGem.id });
+      // Update local state with transcript + regenerated tags/summary
+      const provider = updatedGem.ai_enrichment?.provider;
+      const model = updatedGem.ai_enrichment?.model;
+      const source = provider && model ? `${provider} / ${model}` : provider || null;
+      setLocalGem({
+        ...localGem,
+        transcript_language: updatedGem.transcript_language,
+        tags: updatedGem.ai_enrichment?.tags || localGem.tags,
+        summary: updatedGem.ai_enrichment?.summary || localGem.summary,
+        enrichment_source: source || localGem.enrichment_source,
+      });
+      if (fullGem) {
+        setFullGem(updatedGem);
+      }
+    } catch (err) {
+      setTranscribeError(String(err));
+    } finally {
+      setTranscribing(false);
     }
   };
 
@@ -166,6 +194,11 @@ function GemCard({
       <div className="gem-meta">
         <span className="gem-domain">{gem.domain}</span>
         {gem.author && <span className="gem-author">by {gem.author}</span>}
+        {isAudioTranscript && localGem.transcript_language && (
+          <span className="gem-lang-badge" title="Transcript available">
+            {localGem.transcript_language}
+          </span>
+        )}
       </div>
       {gem.description && (
         <div className="gem-description">{gem.description}</div>
@@ -190,6 +223,20 @@ function GemCard({
         <div className="gem-summary">{localGem.summary}</div>
       )}
 
+      {(enriching || transcribing) && (
+        <div className="gem-enriching" style={{
+          padding: '8px 12px',
+          marginTop: '8px',
+          backgroundColor: '#fff3cd',
+          border: '1px solid #ffc107',
+          borderRadius: '4px',
+          color: '#856404',
+          fontSize: '13px'
+        }}>
+          {transcribing ? 'Transcribing audio...' : 'Enriching with AI...'}
+        </div>
+      )}
+
       {localGem.enrichment_source && (localGem.tags || localGem.summary) && (
         <div className="gem-enrichment-source">
           Enriched by: {localGem.enrichment_source}
@@ -202,12 +249,26 @@ function GemCard({
       
       {expanded && fullGem && (
         <div className="gem-expanded-content">
+          {/* MLX Omni Transcript (if available) */}
+          {fullGem.transcript && (
+            <div className="gem-transcript">
+              <div className="gem-content-label">
+                Transcript {fullGem.transcript_language && `(${fullGem.transcript_language})`}
+              </div>
+              <div className="gem-content-text">{fullGem.transcript}</div>
+            </div>
+          )}
+          
+          {/* Whisper Transcript (collapsed if MLX transcript exists) */}
           {fullGem.content && (
             <div className="gem-full-content">
-              <div className="gem-content-label">Full Content:</div>
+              <div className="gem-content-label">
+                {fullGem.transcript ? '▼ Real-time Transcript (Whisper)' : 'Transcript (Whisper)'}
+              </div>
               <div className="gem-content-text">{fullGem.content}</div>
             </div>
           )}
+          
           {fullGem.source_meta && (
             <div className="gem-source-meta">
               <div className="gem-content-label">Metadata:</div>
@@ -249,6 +310,16 @@ function GemCard({
             title="AI enrichment unavailable. Check Settings to configure an intelligence provider."
           >
             ✨
+          </button>
+        )}
+        {isAudioTranscript && aiAvailable && !localGem.transcript_language && (
+          <button
+            onClick={handleTranscribe}
+            className="gem-enrich-button"
+            disabled={transcribing}
+            title="Transcribe recording"
+          >
+            {transcribing ? '...' : 'Transcribe'}
           </button>
         )}
         {confirmDelete ? (
@@ -298,6 +369,12 @@ function GemCard({
       {enrichError && (
         <div className="error-state" style={{ marginTop: '8px' }}>
           {enrichError}
+        </div>
+      )}
+
+      {transcribeError && (
+        <div className="error-state" style={{ marginTop: '8px' }}>
+          {transcribeError}
         </div>
       )}
     </div>
