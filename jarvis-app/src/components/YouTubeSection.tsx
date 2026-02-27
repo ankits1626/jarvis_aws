@@ -10,7 +10,7 @@ interface DetectedVideo extends YouTubeDetectedEvent {
 }
 
 interface YouTubeSectionProps {
-  onClose: () => void;
+  onClose?: () => void;
 }
 
 interface VideoCardProps {
@@ -139,7 +139,7 @@ ${gist.description}`;
     <div className="settings-panel">
       <div className="settings-header">
         <h2>YouTube</h2>
-        <button onClick={onClose} className="close-button">×</button>
+        {onClose && <button onClick={onClose} className="close-button">×</button>}
       </div>
       <div className="settings-content">
         <div className="videos-list">

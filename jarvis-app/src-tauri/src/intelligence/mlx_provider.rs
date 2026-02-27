@@ -246,15 +246,20 @@ impl MlxProvider {
         Ok(provider)
     }
 
-    /// Send a command and receive a response (with 60s timeout for inference)
-    async fn send_command(&self, cmd: NdjsonCommand) -> Result<NdjsonResponse, String> {
+    /// Send a command and receive a response with configurable timeout.
+    ///
+    /// `timeout_secs` controls both the write and read timeout for this command.
+    /// Use shorter timeouts (60s) for quick operations like tags/summary,
+    /// and longer timeouts (600s) for audio transcription of large files.
+    async fn send_command(&self, cmd: NdjsonCommand, timeout_secs: u64) -> Result<NdjsonResponse, String> {
+        let command_name = cmd.command.clone();
         let mut state = self.state.lock().await;
 
         // Serialize command to JSON + newline
         let json = serde_json::to_string(&cmd)
             .map_err(|e| format!("Failed to serialize command: {}", e))?;
 
-        // Write to stdin with 60s timeout
+        // Write to stdin
         {
             let stdin = state.stdin.as_mut().ok_or("Stdin not available")?;
             let write_future = async {
@@ -264,25 +269,36 @@ impl MlxProvider {
                 Ok::<_, std::io::Error>(())
             };
 
-            tokio::time::timeout(std::time::Duration::from_secs(60), write_future)
+            tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), write_future)
                 .await
-                .map_err(|_| "Command write timeout".to_string())?
+                .map_err(|_| {
+                    eprintln!("MLX: Write timeout after {}s for command '{}'. The sidecar may be unresponsive.", timeout_secs, command_name);
+                    format!("Command write timeout ({}s) for '{}'", timeout_secs, command_name)
+                })?
                 .map_err(|e| format!("Failed to write command: {}", e))?;
         }
 
-        // Read one line from stdout with 60s timeout
+        // Read one line from stdout
         let mut response_line = String::new();
         {
             let stdout = state.stdout.as_mut().ok_or("Stdout not available")?;
             let read_future = stdout.read_line(&mut response_line);
 
-            tokio::time::timeout(std::time::Duration::from_secs(60), read_future)
+            tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), read_future)
                 .await
-                .map_err(|_| "Command read timeout".to_string())?
+                .map_err(|_| {
+                    eprintln!(
+                        "MLX: Read timeout after {}s for command '{}'. This may indicate the operation is taking longer than expected. \
+                        For audio transcription, larger files need more time.",
+                        timeout_secs, command_name
+                    );
+                    format!("Command read timeout ({}s) for '{}'. Try a shorter audio file or increase timeout.", timeout_secs, command_name)
+                })?
                 .map_err(|e| format!("Failed to read response: {}", e))?;
         }
 
         if response_line.is_empty() {
+            eprintln!("MLX: Sidecar closed connection (broken pipe) during command '{}'", command_name);
             return Err("Sidecar closed connection (broken pipe)".to_string());
         }
 
@@ -303,7 +319,7 @@ impl MlxProvider {
             capabilities: None,
         };
 
-        let response = self.send_command(cmd).await?;
+        let response = self.send_command(cmd, 15).await?;
 
         if response.response_type == "error" {
             return Ok(AvailabilityResult {
@@ -343,7 +359,7 @@ impl MlxProvider {
             capabilities: Some(capabilities),
         };
 
-        let response = self.send_command(cmd).await?;
+        let response = self.send_command(cmd, 60).await?;
 
         if response.response_type == "error" {
             return Err(response
@@ -431,7 +447,7 @@ impl MlxProvider {
         };
 
         // Try to send shutdown command (ignore errors)
-        let _ = self.send_command(cmd).await;
+        let _ = self.send_command(cmd, 5).await;
 
         // Wait up to 3 seconds for graceful exit
         let mut state = self.state.lock().await;
@@ -459,7 +475,7 @@ impl MlxProvider {
             capabilities: None,
         };
 
-        let response = self.send_command(cmd).await?;
+        let response = self.send_command(cmd, 60).await?;
 
         if response.response_type == "error" {
             return Err(response
@@ -490,7 +506,7 @@ impl MlxProvider {
             capabilities: None,
         };
 
-        let response = self.send_command(cmd).await?;
+        let response = self.send_command(cmd, 60).await?;
 
         if response.response_type == "error" {
             return Err(response
@@ -509,33 +525,41 @@ impl MlxProvider {
         Ok(summary)
     }
 
-    /// Generate transcript from audio file
+    /// Generate transcript from audio file.
+    ///
+    /// Uses a 600s timeout to support large audio files (10+ minutes).
+    /// The send_command itself also uses 600s so neither layer cuts off early.
     async fn generate_transcript_internal(&self, audio_path: &std::path::Path) -> Result<super::provider::TranscriptResult, String> {
+        let audio_path_str = audio_path.to_string_lossy().to_string();
+        eprintln!("MLX: Starting transcript generation for '{}'", audio_path_str);
+
         let cmd = NdjsonCommand {
             command: "generate-transcript".to_string(),
             model_path: None,
             content: None,
             repo_id: None,
             destination: None,
-            audio_path: Some(audio_path.to_string_lossy().to_string()),
+            audio_path: Some(audio_path_str.clone()),
             capabilities: None,
         };
 
-        // Use 120s timeout for transcript generation (longer than tags/summary)
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(120),
-            self.send_command(cmd)
-        )
-        .await
-        .map_err(|_| "Transcript generation timeout (120s)".to_string())??;
+        // 600s (10 min) timeout for transcript generation — large audio files need time
+        let response = self.send_command(cmd, 600).await
+            .map_err(|e| {
+                eprintln!("MLX: Transcript generation failed for '{}': {}", audio_path_str, e);
+                e
+            })?;
 
         if response.response_type == "error" {
-            return Err(response.error.unwrap_or_else(|| "Transcript generation failed".to_string()));
+            let err = response.error.unwrap_or_else(|| "Transcript generation failed".to_string());
+            eprintln!("MLX: Transcript generation error for '{}': {}", audio_path_str, err);
+            return Err(err);
         }
 
         let language = response.language.ok_or("No language in response")?;
         let transcript = response.transcript.ok_or("No transcript in response")?;
 
+        eprintln!("MLX: Transcript generation complete for '{}' (language: {})", audio_path_str, language);
         Ok(super::provider::TranscriptResult { language, transcript })
     }
 }

@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { BrowserTab, PageGist, SourceType, Gem, AvailabilityResult, ClaudePanelStatus } from '../state/types';
 
 interface BrowserToolProps {
-  onClose: () => void;
+  onClose?: () => void;
 }
 
 /** Compare two URLs by page identity, ignoring volatile query params like t=, si=, feature=.
@@ -250,7 +250,7 @@ export function BrowserTool({ onClose }: BrowserToolProps) {
     <div className="settings-panel">
       <div className="settings-header">
         <h2>Browser</h2>
-        <button onClick={onClose} className="close-button">×</button>
+        {onClose && <button onClick={onClose} className="close-button">×</button>}
       </div>
       <div className="settings-content">
         <div className="browser-toolbar">

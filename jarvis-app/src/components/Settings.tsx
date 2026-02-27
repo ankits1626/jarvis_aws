@@ -23,7 +23,7 @@ interface BrowserSettings {
 }
 
 interface SettingsProps {
-  onClose: () => void;
+  onClose?: () => void;
 }
 
 export function Settings({ onClose }: SettingsProps) {
@@ -257,7 +257,7 @@ export function Settings({ onClose }: SettingsProps) {
       <div className="settings-panel">
         <div className="settings-header">
           <h2>Settings</h2>
-          <button onClick={onClose} className="close-button">×</button>
+          {onClose && <button onClick={onClose} className="close-button">×</button>}
         </div>
         <div className="settings-content">
           <div className="loading">Loading settings...</div>
@@ -271,7 +271,7 @@ export function Settings({ onClose }: SettingsProps) {
       <div className="settings-panel">
         <div className="settings-header">
           <h2>Settings</h2>
-          <button onClick={onClose} className="close-button">×</button>
+          {onClose && <button onClick={onClose} className="close-button">×</button>}
         </div>
         <div className="settings-content">
           <div className="error">Error: {error || 'Failed to load settings'}</div>
@@ -414,7 +414,7 @@ export function Settings({ onClose }: SettingsProps) {
     <div className="settings-panel">
       <div className="settings-header">
         <h2>Settings</h2>
-        <button onClick={onClose} className="close-button">×</button>
+        {onClose && <button onClick={onClose} className="close-button">×</button>}
       </div>
       <div className="settings-content">
         <section className="settings-section">

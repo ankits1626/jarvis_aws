@@ -2,16 +2,20 @@ import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { onAction } from "@tauri-apps/plugin-notification";
 import { useRecording } from "./hooks/useRecording";
+import { useResizable } from "./hooks/useResizable";
 import { useTauriEvent } from "./hooks/useTauriEvent";
 import { DeleteConfirmDialog } from "./components/DeleteConfirmDialog";
-import { TranscriptDisplay } from "./components/TranscriptDisplay";
 import { ErrorToast } from "./components/ErrorToast";
 import { Settings } from "./components/Settings";
 import { YouTubeSection } from "./components/YouTubeSection";
 import { BrowserTool } from "./components/BrowserTool";
 import { GemsPanel } from "./components/GemsPanel";
+import LeftNav from "./components/LeftNav";
+import RightPanel from "./components/RightPanel";
 import type { YouTubeDetectedEvent, TranscriptResult, RecordingTranscriptionState, GemPreview, AvailabilityResult, Gem } from "./state/types";
 import "./App.css";
+
+type ActiveNav = 'record' | 'recordings' | 'gems' | 'youtube' | 'browser' | 'settings';
 
 /**
  * Main application component for JarvisApp
@@ -42,14 +46,19 @@ function App() {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isLoadingRecordings, setIsLoadingRecordings] = useState(true);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  const [showSettings, setShowSettings] = useState(false);
-  const [showHamburgerMenu, setShowHamburgerMenu] = useState(false);
   const [youtubeNotification, setYoutubeNotification] = useState(false);
-  const [showYouTube, setShowYouTube] = useState(false);
-  const [showBrowserTool, setShowBrowserTool] = useState(false);
-  const [showGems, setShowGems] = useState(false);
   const [toastError, setToastError] = useState<string | null>(null);
   
+  // Three-panel layout state
+  const [activeNav, setActiveNav] = useState<ActiveNav>('record');
+  const [leftNavCollapsed, setLeftNavCollapsed] = useState(false);
+  const [selectedGemId, setSelectedGemId] = useState<string | null>(null);
+  const [gemsPanelRefreshKey, setGemsPanelRefreshKey] = useState(0);
+  
+  // Resizable right panel
+  const { width: rightPanelWidth, handleMouseDown: handleResizeMouseDown, isResizing } = useResizable();
+  const showRightPanel = activeNav === 'record' || activeNav === 'recordings' || activeNav === 'gems';
+
   // Recording transcription state
   const [recordingStates, setRecordingStates] = useState<Record<string, RecordingTranscriptionState>>({});
   const [aiAvailable, setAiAvailable] = useState<boolean>(false);
@@ -104,30 +113,15 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.recordings.length, isLoadingRecordings]);
 
-  // Close hamburger menu when clicking outside
-  useEffect(() => {
-    if (!showHamburgerMenu) return;
-    
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as HTMLElement;
-      if (!target.closest('.hamburger-button') && !target.closest('.hamburger-menu')) {
-        setShowHamburgerMenu(false);
-      }
-    };
-    
-    document.addEventListener('click', handleClickOutside);
-    return () => document.removeEventListener('click', handleClickOutside);
-  }, [showHamburgerMenu]);
-
   // Listen for youtube-video-detected events to show notification badge
   useTauriEvent<YouTubeDetectedEvent>(
     'youtube-video-detected',
     useCallback(() => {
-      console.log('[App] youtube-video-detected event received, showYouTube:', showYouTube);
-      if (!showYouTube) {
+      console.log('[App] youtube-video-detected event received, activeNav:', activeNav);
+      if (activeNav !== 'youtube') {
         setYoutubeNotification(true);
       }
-    }, [showYouTube])
+    }, [activeNav])
   );
 
   // Listen for notification clicks to open YouTube section
@@ -136,7 +130,7 @@ function App() {
     
     onAction(() => {
       console.log('[App] Notification clicked, opening YouTube section');
-      setShowYouTube(true);
+      setActiveNav('youtube');
       setYoutubeNotification(false);
     }).then(unlisten => {
       cleanup = unlisten;
@@ -360,14 +354,78 @@ function App() {
       }));
     }
   };
-
+  
   /**
-   * Handle opening YouTube section
+   * Handle gem selection from GemsPanel
    */
-  const handleOpenYouTube = () => {
-    setShowYouTube(true);
-    setShowHamburgerMenu(false);
-    setYoutubeNotification(false);
+  const handleGemSelect = (gemId: string | null) => {
+    setSelectedGemId(gemId);
+  };
+  
+  /**
+   * Handle gem deletion from right panel
+   */
+  const handleDeleteGem = async () => {
+    if (!selectedGemId) return;
+    
+    try {
+      await invoke('delete_gem', { id: selectedGemId });
+      setSelectedGemId(null);
+      // Trigger gems panel refresh by incrementing key
+      setGemsPanelRefreshKey(prev => prev + 1);
+    } catch (error) {
+      console.error('Failed to delete gem:', error);
+      setToastError(`Failed to delete gem: ${error}`);
+    }
+  };
+  
+  /**
+   * Handle gem transcription from right panel
+   */
+  const handleTranscribeGem = async () => {
+    if (!selectedGemId) return;
+    
+    try {
+      await invoke('transcribe_gem', { id: selectedGemId });
+      // Gem will be updated, could trigger a refresh here
+    } catch (error) {
+      console.error('Failed to transcribe gem:', error);
+      setToastError(`Failed to transcribe gem: ${error}`);
+    }
+  };
+  
+  /**
+   * Handle gem enrichment from right panel
+   */
+  const handleEnrichGem = async () => {
+    if (!selectedGemId) return;
+    
+    try {
+      await invoke('enrich_gem', { id: selectedGemId });
+      // Gem will be updated, could trigger a refresh here
+    } catch (error) {
+      console.error('Failed to enrich gem:', error);
+      setToastError(`Failed to enrich gem: ${error}`);
+    }
+  };
+  
+  /**
+   * Handle navigation change
+   */
+  const handleNavChange = (nav: ActiveNav) => {
+    setActiveNav(nav);
+    
+    // Clear YouTube notification when navigating to YouTube
+    if (nav === 'youtube') {
+      setYoutubeNotification(false);
+    }
+  };
+  
+  /**
+   * Handle left nav collapse toggle
+   */
+  const handleToggleCollapse = () => {
+    setLeftNavCollapsed(!leftNavCollapsed);
   };
 
   /**
@@ -392,333 +450,238 @@ function App() {
   };
 
   return (
-    <div className="app">
-      <div className="container">
-        <div className="header">
-          <h1>JarvisApp</h1>
-          <div className="header-buttons">
-            <button
-              className="hamburger-button"
-              onClick={() => setShowHamburgerMenu(!showHamburgerMenu)}
-              title="Menu"
-            >
-              ☰
-              {youtubeNotification && <span className="notification-badge" />}
-            </button>
-            <button
-              className="settings-button"
-              onClick={() => setShowSettings(true)}
-              title="Settings"
-            >
-              ⚙️
-            </button>
-          </div>
-          
-          {/* Hamburger dropdown menu */}
-          {showHamburgerMenu && (
-            <div className="hamburger-menu">
-              <button
-                className="hamburger-menu-item"
-                onClick={handleOpenYouTube}
-              >
-                📹 YouTube
-              </button>
-              <button
-                className="hamburger-menu-item"
-                onClick={() => { setShowBrowserTool(true); setShowHamburgerMenu(false); }}
-              >
-                🌐 Browser
-              </button>
-              <button
-                className="hamburger-menu-item"
-                onClick={() => { setShowGems(true); setShowHamburgerMenu(false); }}
-              >
-                💎 Gems
-              </button>
+    <div className={`app-layout${isResizing ? ' is-resizing' : ''}`}>
+      {/* Left Navigation Panel */}
+      <LeftNav
+        activeNav={activeNav}
+        onNavChange={handleNavChange}
+        youtubeNotification={youtubeNotification}
+        collapsed={leftNavCollapsed}
+        onToggleCollapse={handleToggleCollapse}
+      />
+      
+      {/* Center Content Panel */}
+      <div className="center-panel">
+        {activeNav === 'record' && (
+          <>
+            {/* Status Display */}
+            <div className="status">
+              {state.recordingState === "idle" && <p>Ready to record</p>}
+              {state.recordingState === "recording" && (
+                <p className="recording">Recording... {formatTime(state.elapsedTime)}</p>
+              )}
+              {state.recordingState === "processing" && <p>Processing...</p>}
             </div>
-          )}
-        </div>
-        
-        {/* Status Display */}
-        <div className="status">
-          {state.recordingState === "idle" && <p>Ready to record</p>}
-          {state.recordingState === "recording" && (
-            <p className="recording">Recording... {formatTime(state.elapsedTime)}</p>
-          )}
-          {state.recordingState === "processing" && <p>Processing...</p>}
-        </div>
 
-        {/* Record Button */}
-        <div className="button-container">
-          {state.recordingState === "idle" && (
-            <button
-              className="record-button"
-              onClick={handleStartRecording}
-            >
-              ⏺ Start Recording
-            </button>
-          )}
-          {state.recordingState === "recording" && (
-            <button
-              className="record-button stop recording"
-              onClick={handleStopRecording}
-            >
-              ⏹ Stop Recording
-            </button>
-          )}
-          {state.recordingState === "processing" && (
-            <button className="record-button" disabled>
-              <span className="spinner"></span>
-              Processing...
-            </button>
-          )}
-          
-          {/* Requirement 8.5: Inline error for concurrent recording attempts */}
-          {state.error && state.error.toLowerCase().includes("already") && (
-            <div className="inline-error">
-              {state.error}
-            </div>
-          )}
-        </div>
-
-        {/* Recordings List - Requirements 4.1, 4.2, 4.3, 4.4 */}
-        {isLoadingRecordings ? (
-          <div className="recordings-section">
-            <h2>Recordings</h2>
-            <div className="skeleton-loader">
-              {[1, 2, 3].map((i) => (
-                <div key={i} className="skeleton-item">
-                  <div className="skeleton-line long"></div>
-                  <div className="skeleton-line short"></div>
+            {/* Record Button */}
+            <div className="button-container">
+              {state.recordingState === "idle" && (
+                <button
+                  className="record-button"
+                  onClick={handleStartRecording}
+                >
+                  ⏺ Start Recording
+                </button>
+              )}
+              {state.recordingState === "recording" && (
+                <button
+                  className="record-button stop recording"
+                  onClick={handleStopRecording}
+                >
+                  ⏹ Stop Recording
+                </button>
+              )}
+              {state.recordingState === "processing" && (
+                <button className="record-button" disabled>
+                  <span className="spinner"></span>
+                  Processing...
+                </button>
+              )}
+              
+              {/* Inline error for concurrent recording attempts */}
+              {state.error && state.error.toLowerCase().includes("already") && (
+                <div className="inline-error">
+                  {state.error}
                 </div>
-              ))}
+              )}
             </div>
-          </div>
-        ) : state.recordings.length > 0 ? (
-          <div className="recordings-section">
-            <h2>Recordings ({state.recordings.length})</h2>
-            <div className="recordings-list">
-              {state.recordings.map((recording) => {
-                const recordingState = recordingStates[recording.filename] || {
-                  transcribing: false,
-                  hasGem: false,
-                  savingGem: false,
-                  gemSaved: false,
-                };
-                
-                return (
-                  <div key={recording.filename} className="recording-item-container">
-                    <div
-                      className={`recording-item ${
-                        state.selectedRecording === recording.filename ? "selected" : ""
-                      }`}
-                    >
-                      <div
-                        className="recording-info"
-                        onClick={() => handleSelectRecording(recording.filename)}
-                      >
-                        <div className="recording-name">
-                          {recording.filename}
-                          {recordingState.hasGem && <span className="gem-indicator" title="Has gem">💎</span>}
-                        </div>
-                        <div className="recording-meta">
-                          {formatDate(recording.created_at)} • {formatTime(Math.floor(recording.duration_seconds))} • {formatFileSize(recording.size_bytes)}
-                        </div>
-                      </div>
-                      <div className="recording-actions">
-                        {aiAvailable && (
-                          <button
-                            className="transcribe-button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleTranscribeRecording(recording.filename);
-                            }}
-                            disabled={recordingState.transcribing}
-                            title="Transcribe recording"
-                          >
-                            {recordingState.transcribing ? "⏳" : "📝"}
-                          </button>
-                        )}
-                        <button
-                          className="delete-button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteRecording(recording.filename);
-                          }}
-                          title="Delete recording"
-                        >
-                          🗑️
-                        </button>
-                      </div>
-                    </div>
-                    
-                    {/* Transcript display */}
-                    {recordingState.transcript && (
-                      <div className="transcript-container">
-                        <div className="transcript-header">
-                          <span className="transcript-label">Transcript ({recordingState.transcript.language})</span>
-                        </div>
-                        <div className="transcript-text">
-                          {recordingState.transcript.transcript}
-                        </div>
-                        
-                        {/* Save/Update Gem button */}
-                        <div className="gem-actions">
-                          <button
-                            className="save-gem-button"
-                            onClick={() => handleSaveGem(recording.filename)}
-                            disabled={recordingState.savingGem}
-                          >
-                            {recordingState.savingGem ? (
-                              <>
-                                <span className="spinner"></span>
-                                Saving...
-                              </>
-                            ) : recordingState.gemSaved ? (
-                              "✓ Saved!"
-                            ) : recordingState.hasGem ? (
-                              "Update Gem"
-                            ) : (
-                              "Save as Gem"
-                            )}
-                          </button>
-                          {recordingState.gemError && (
-                            <div className="gem-error">{recordingState.gemError}</div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                    
-                    {/* Transcription error */}
-                    {recordingState.transcriptError && (
-                      <div className="transcript-error">
-                        Error: {recordingState.transcriptError}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ) : (
-          // Requirement 4.4: Display message when list is empty
-          <div className="recordings-section">
-            <p className="empty-message">No recordings yet. Start recording to create your first one!</p>
-          </div>
-        )}
 
-        {/* Audio Player - Requirements 5.3, 5.4, 5.5, 5.6 */}
-        {state.selectedRecording && audioUrl && (
-          <div className="audio-player">
-            <div className="player-header">
-              <h3>Playing: {state.selectedRecording}</h3>
-              <button className="close-button" onClick={handleClosePlayer}>
-                ✕
-              </button>
-            </div>
-            <audio
-              controls
-              src={audioUrl}
-              autoPlay
-              onEnded={() => {
-                // Requirement 5.6: Reset to beginning on completion
-                const audio = document.querySelector("audio");
-                if (audio) audio.currentTime = 0;
-              }}
-            />
-          </div>
-        )}
-
-        {/* Transcript Display - Requirements 9.1, 9.2, 9.3, 9.4, 9.5, 9.6 */}
-        <TranscriptDisplay
-          transcript={state.transcript}
-          status={state.transcriptionStatus}
-          error={state.transcriptionError}
-          recordingFilename={state.currentRecording || (state.recordings[0]?.filename ?? null)}
-        />
-
-        {/* Error Display - Requirement 8.4 */}
-        {/* Don't show concurrent recording errors here - they appear inline (Requirement 8.5) */}
-        {state.error && !state.showPermissionDialog && !state.error.toLowerCase().includes("already") && (
-          <div className="error">
-            <p>{state.error}</p>
-            <button onClick={clearError}>
-              Dismiss
-            </button>
-          </div>
-        )}
-
-        {/* Permission Dialog - Requirement 8.1 */}
-        {state.showPermissionDialog && (
-          <div className="dialog-overlay">
-            <div className="dialog">
-              <h2>Permission Required</h2>
-              <p>
-                {state.error || "JarvisApp needs Screen Recording and Microphone permissions to capture audio."}
-              </p>
-              <div className="dialog-buttons">
-                <button onClick={openSystemSettings}>
-                  Open System Settings
-                </button>
-                <button onClick={handleRetryRecording}>
-                  Retry
-                </button>
+            {/* Error Display - Don't show concurrent recording errors here */}
+            {state.error && !state.showPermissionDialog && !state.error.toLowerCase().includes("already") && (
+              <div className="error">
+                <p>{state.error}</p>
                 <button onClick={clearError}>
-                  Close
+                  Dismiss
                 </button>
               </div>
+            )}
+          </>
+        )}
+        
+        {activeNav === 'recordings' && (
+          <>
+            {isLoadingRecordings ? (
+              <div className="recordings-section">
+                <h2>Recordings</h2>
+                <div className="skeleton-loader">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="skeleton-item">
+                      <div className="skeleton-line long"></div>
+                      <div className="skeleton-line short"></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : state.recordings.length > 0 ? (
+              <div className="recordings-section">
+                <h2>Recordings ({state.recordings.length})</h2>
+                <div className="recordings-list">
+                  {state.recordings.map((recording) => {
+                    const recordingState = recordingStates[recording.filename] || {
+                      transcribing: false,
+                      hasGem: false,
+                      savingGem: false,
+                      gemSaved: false,
+                    };
+                    
+                    return (
+                      <div
+                        key={recording.filename}
+                        className={`recording-item ${
+                          state.selectedRecording === recording.filename ? "selected" : ""
+                        }`}
+                      >
+                        <div
+                          className="recording-info"
+                          onClick={() => handleSelectRecording(recording.filename)}
+                        >
+                          <div className="recording-name">
+                            {recording.filename}
+                            {recordingState.hasGem && <span className="gem-indicator" title="Has gem">💎</span>}
+                          </div>
+                          <div className="recording-meta">
+                            {formatDate(recording.created_at)} • {formatTime(Math.floor(recording.duration_seconds))} • {formatFileSize(recording.size_bytes)}
+                          </div>
+                        </div>
+                        <div className="recording-actions">
+                          {aiAvailable && (
+                            <button
+                              className="transcribe-button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleTranscribeRecording(recording.filename);
+                              }}
+                              disabled={recordingState.transcribing}
+                              title="Transcribe recording"
+                            >
+                              {recordingState.transcribing ? "⏳" : "📝"}
+                            </button>
+                          )}
+                          <button
+                            className="delete-button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteRecording(recording.filename);
+                            }}
+                            title="Delete recording"
+                          >
+                            🗑️
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div className="recordings-section">
+                <p className="empty-message">No recordings yet. Start recording to create your first one!</p>
+              </div>
+            )}
+          </>
+        )}
+        
+        {activeNav === 'gems' && (
+          <GemsPanel key={gemsPanelRefreshKey} onGemSelect={handleGemSelect} />
+        )}
+        
+        {activeNav === 'youtube' && (
+          <YouTubeSection />
+        )}
+        
+        {activeNav === 'browser' && (
+          <BrowserTool />
+        )}
+        
+        {activeNav === 'settings' && (
+          <Settings />
+        )}
+      </div>
+      
+      {/* Resize Handle */}
+      {showRightPanel && (
+        <div className="resize-handle" onMouseDown={handleResizeMouseDown} />
+      )}
+
+      {/* Right Context Panel */}
+      <RightPanel
+        activeNav={activeNav}
+        selectedRecording={state.selectedRecording}
+        selectedGemId={selectedGemId}
+        recordingState={state.recordingState}
+        transcript={state.transcript}
+        transcriptionStatus={state.transcriptionStatus}
+        transcriptionError={state.transcriptionError}
+        audioUrl={audioUrl}
+        onClosePlayer={handleClosePlayer}
+        recordingStates={recordingStates}
+        onTranscribeRecording={handleTranscribeRecording}
+        onSaveGem={() => state.selectedRecording && handleSaveGem(state.selectedRecording)}
+        onDeleteGem={handleDeleteGem}
+        onTranscribeGem={handleTranscribeGem}
+        onEnrichGem={handleEnrichGem}
+        aiAvailable={aiAvailable}
+        recordings={state.recordings}
+        currentRecording={state.currentRecording}
+        style={{ width: rightPanelWidth }}
+      />
+
+      {/* Permission Dialog */}
+      {state.showPermissionDialog && (
+        <div className="dialog-overlay">
+          <div className="dialog">
+            <h2>Permission Required</h2>
+            <p>
+              {state.error || "JarvisApp needs Screen Recording and Microphone permissions to capture audio."}
+            </p>
+            <div className="dialog-buttons">
+              <button onClick={openSystemSettings}>
+                Open System Settings
+              </button>
+              <button onClick={handleRetryRecording}>
+                Retry
+              </button>
+              <button onClick={clearError}>
+                Close
+              </button>
             </div>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* Delete Confirmation Dialog - Requirement 6.1 */}
-        <DeleteConfirmDialog
-          visible={deleteTarget !== null}
-          recordingName={deleteTarget ?? ""}
-          onConfirm={confirmDelete}
-          onCancel={cancelDelete}
-        />
+      {/* Delete Confirmation Dialog */}
+      <DeleteConfirmDialog
+        visible={deleteTarget !== null}
+        recordingName={deleteTarget ?? ""}
+        onConfirm={confirmDelete}
+        onCancel={cancelDelete}
+      />
 
-        {/* Settings Panel */}
-        {showSettings && (
-          <div className="dialog-overlay">
-            <Settings onClose={() => setShowSettings(false)} />
-          </div>
-        )}
-
-        {/* YouTube Section */}
-        {showYouTube && (
-          <div className="dialog-overlay" onClick={(e) => {
-            if (e.target === e.currentTarget) setShowYouTube(false);
-          }}>
-            <YouTubeSection onClose={() => setShowYouTube(false)} />
-          </div>
-        )}
-
-        {/* Browser Tool */}
-        {showBrowserTool && (
-          <div className="dialog-overlay" onClick={(e) => {
-            if (e.target === e.currentTarget) setShowBrowserTool(false);
-          }}>
-            <BrowserTool onClose={() => setShowBrowserTool(false)} />
-          </div>
-        )}
-
-        {/* Gems Panel */}
-        {showGems && (
-          <div className="dialog-overlay" onClick={(e) => {
-            if (e.target === e.currentTarget) setShowGems(false);
-          }}>
-            <GemsPanel onClose={() => setShowGems(false)} />
-          </div>
-        )}
-
-        {/* Error Toast for MLX sidecar crashes and other runtime errors */}
-        <ErrorToast
-          message={toastError}
-          onClose={() => setToastError(null)}
-        />
-      </div>
+      {/* Error Toast for MLX sidecar crashes and other runtime errors */}
+      <ErrorToast
+        message={toastError}
+        onClose={() => setToastError(null)}
+      />
     </div>
   );
 }

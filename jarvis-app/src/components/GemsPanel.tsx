@@ -4,7 +4,8 @@ import { open } from '@tauri-apps/plugin-shell';
 import type { GemPreview, Gem, AvailabilityResult } from '../state/types';
 
 interface GemsPanelProps {
-  onClose: () => void;
+  onClose?: () => void;
+  onGemSelect?: (gemId: string | null) => void;
 }
 
 const SOURCE_BADGE_CLASS: Record<string, string> = {
@@ -25,12 +26,14 @@ function GemCard({
   gem, 
   onDelete, 
   aiAvailable,
-  onFilterByTag 
+  onFilterByTag,
+  onSelect
 }: { 
   gem: GemPreview; 
   onDelete: (id: string) => Promise<void>;
   aiAvailable: boolean;
   onFilterByTag: (tag: string) => void;
+  onSelect?: (gemId: string) => void;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -183,14 +186,16 @@ function GemCard({
   const badgeClass = SOURCE_BADGE_CLASS[gem.source_type] || 'source-badge other';
 
   return (
-    <div className="gem-card">
+    <div className="gem-card" onClick={() => onSelect?.(gem.id)} style={{ cursor: onSelect ? 'pointer' : 'default' }}>
       <div className="gem-card-header">
         <span className={badgeClass}>{gem.source_type}</span>
         <span className="gem-date">
           {new Date(gem.captured_at).toLocaleDateString()}
         </span>
       </div>
-      <div className="gem-title">{gem.title}</div>
+      <div className="gem-title">
+        {gem.title}
+      </div>
       <div className="gem-meta">
         <span className="gem-domain">{gem.domain}</span>
         {gem.author && <span className="gem-author">by {gem.author}</span>}
@@ -210,7 +215,7 @@ function GemCard({
             <button
               key={idx}
               className="gem-tag"
-              onClick={() => onFilterByTag(tag)}
+              onClick={(e) => { e.stopPropagation(); onFilterByTag(tag); }}
               title={`Filter by tag: ${tag}`}
             >
               {tag}
@@ -278,7 +283,7 @@ function GemCard({
         </div>
       )}
       
-      <div className="gem-actions">
+      <div className="gem-actions" onClick={(e) => e.stopPropagation()}>
         <button 
           onClick={handleOpen} 
           className="gem-open-button"
@@ -381,7 +386,7 @@ function GemCard({
   );
 }
 
-export function GemsPanel({ onClose }: GemsPanelProps) {
+export function GemsPanel({ onClose, onGemSelect }: GemsPanelProps) {
   const [gems, setGems] = useState<GemPreview[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -447,6 +452,8 @@ export function GemsPanel({ onClose }: GemsPanelProps) {
     try {
       await invoke('delete_gem', { id });
       setGems(prev => prev.filter(g => g.id !== id));
+      // Clear right panel selection if this gem was selected
+      onGemSelect?.(null);
     } catch (err) {
       setError(String(err));
     }
@@ -470,7 +477,7 @@ export function GemsPanel({ onClose }: GemsPanelProps) {
             </span>
           )}
         </h2>
-        <button onClick={onClose} className="close-button">×</button>
+        {onClose && <button onClick={onClose} className="close-button">×</button>}
       </div>
       <div className="settings-content">
         {aiAvailability && !aiAvailability.available && (
@@ -532,6 +539,7 @@ export function GemsPanel({ onClose }: GemsPanelProps) {
               onDelete={handleDelete}
               aiAvailable={aiAvailability?.available || false}
               onFilterByTag={handleFilterByTag}
+              onSelect={onGemSelect}
             />
           ))}
         </div>
