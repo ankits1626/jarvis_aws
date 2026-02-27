@@ -532,6 +532,180 @@ Summary:"""
                 "error": f"Transcription failed: {str(e)}"
             }
     
+    def copilot_analyze(self, audio_path: str, context: str) -> Dict[str, Any]:
+        """Analyze audio chunk with running context for Co-Pilot.
+        
+        Args:
+            audio_path: Path to audio file (.wav format)
+            context: Running context (previous cycle's summary, empty for first cycle)
+            
+        Returns:
+            Dict with type, command, and structured analysis fields
+        """
+        if self.model is None:
+            return {
+                "type": "error",
+                "command": "copilot-analyze",
+                "error": "No model loaded"
+            }
+        
+        # Check capabilities from catalog
+        if "audio" not in self.capabilities:
+            return {
+                "type": "error",
+                "command": "copilot-analyze",
+                "error": "Model does not support audio analysis"
+            }
+        
+        # Check if mlx_lm_omni.generate is available
+        if not OMNI_AVAILABLE or mlx_omni_generate is None:
+            return {
+                "type": "error",
+                "command": "copilot-analyze",
+                "error": "mlx-lm-omni not installed. Install it to enable Co-Pilot analysis."
+            }
+        
+        try:
+            import librosa
+            import numpy as np
+            import os
+            import json as _json
+            
+            # Check if file exists
+            if not os.path.exists(audio_path):
+                return {
+                    "type": "error",
+                    "command": "copilot-analyze",
+                    "error": f"Audio file not found: {audio_path}"
+                }
+            
+            # Load audio file
+            audio, sr = librosa.load(audio_path, sr=16000, mono=True)
+            
+            # Handle empty audio
+            if len(audio) == 0:
+                return {
+                    "type": "response",
+                    "command": "copilot-analyze",
+                    "new_content": "",
+                    "updated_summary": context,
+                    "key_points": [],
+                    "decisions": [],
+                    "action_items": [],
+                    "open_questions": [],
+                    "suggested_questions": [],
+                    "key_concepts": []
+                }
+            
+            # Clear ExtendedEmbedding queue to prevent state leakage
+            if hasattr(self.model, 'language_model') and hasattr(self.model.language_model, 'model'):
+                embed = self.model.language_model.model.embed_tokens
+                if hasattr(embed, 'extended_embedding_queue'):
+                    embed.extended_embedding_queue.clear()
+            
+            # Construct prompt based on whether this is first cycle or subsequent
+            if context:
+                prompt_text = f"""Previous conversation summary:
+{context}
+
+Analyze the new audio segment and provide:
+1. What new content was discussed
+2. Updated summary of the entire conversation so far
+3. Key points mentioned
+4. Any decisions made
+5. Action items identified
+6. Open questions raised
+7. Suggested questions to ask next (with reasons)
+8. Key concepts (technical terms, names, topics) with brief context
+
+Respond in JSON format with these exact fields:
+{{"new_content": "...", "updated_summary": "...", "key_points": [...], "decisions": [...], "action_items": [...], "open_questions": [...], "suggested_questions": [{{"question": "...", "reason": "..."}}], "key_concepts": [{{"term": "...", "context": "..."}}]}}"""
+            else:
+                prompt_text = """This is the start of a conversation. Analyze the audio and provide:
+1. What was discussed
+2. Summary of the conversation
+3. Key points mentioned
+4. Any decisions made
+5. Action items identified
+6. Open questions raised
+7. Suggested questions to ask next (with reasons)
+8. Key concepts (technical terms, names, topics) with brief context
+
+Respond in JSON format with these exact fields:
+{"new_content": "...", "updated_summary": "...", "key_points": [...], "decisions": [...], "action_items": [...], "open_questions": [...], "suggested_questions": [{"question": "...", "reason": "..."}], "key_concepts": [{"term": "...", "context": "..."}]}"""
+            
+            # Build messages with audio
+            messages = [
+                {"role": "user", "content": prompt_text, "audio": audio}
+            ]
+            token_ids = self.tokenizer.apply_chat_template(messages, add_generation_prompt=True)
+            
+            # Generate response
+            response = mlx_omni_generate(
+                self.model,
+                self.tokenizer,
+                prompt=token_ids,
+                max_tokens=2000,
+                prefill_step_size=32768,
+                verbose=False
+            )
+            
+            # Parse JSON response
+            response_text = response.strip()
+            
+            # Strip markdown code fence if present
+            if response_text.startswith("```"):
+                lines = response_text.split("\n")
+                lines = [l for l in lines if not l.strip().startswith("```")]
+                response_text = "\n".join(lines).strip()
+            
+            try:
+                parsed = _json.loads(response_text)
+                
+                # Validate required fields, provide defaults for missing (graceful parsing)
+                result = {
+                    "type": "response",
+                    "command": "copilot-analyze",
+                    "new_content": parsed.get("new_content", ""),
+                    "updated_summary": parsed.get("updated_summary", ""),
+                    "key_points": parsed.get("key_points", []),
+                    "decisions": parsed.get("decisions", []),
+                    "action_items": parsed.get("action_items", []),
+                    "open_questions": parsed.get("open_questions", []),
+                    "suggested_questions": parsed.get("suggested_questions", []),
+                    "key_concepts": parsed.get("key_concepts", [])
+                }
+                
+                return result
+                
+            except _json.JSONDecodeError:
+                # Partial JSON - return what we can parse with defaults
+                return {
+                    "type": "response",
+                    "command": "copilot-analyze",
+                    "new_content": response_text,
+                    "updated_summary": response_text,
+                    "key_points": [],
+                    "decisions": [],
+                    "action_items": [],
+                    "open_questions": [],
+                    "suggested_questions": [],
+                    "key_concepts": []
+                }
+        
+        except ImportError as e:
+            return {
+                "type": "error",
+                "command": "copilot-analyze",
+                "error": f"Missing audio dependencies: {str(e)}"
+            }
+        except Exception as e:
+            return {
+                "type": "error",
+                "command": "copilot-analyze",
+                "error": f"Co-Pilot analysis failed: {str(e)}"
+            }
+    
     def download_model(self, repo_id: str, destination: str) -> None:
         """Download a model from HuggingFace Hub with progress reporting."""
         try:
@@ -627,6 +801,13 @@ Summary:"""
             if not audio_path:
                 return {"type": "error", "command": command, "error": "Missing audio_path"}
             return self.generate_transcript(audio_path)
+        
+        elif command == "copilot-analyze":
+            audio_path = command_data.get("audio_path")
+            context = command_data.get("context", "")
+            if not audio_path:
+                return {"type": "error", "command": command, "error": "Missing audio_path"}
+            return self.copilot_analyze(audio_path, context)
         
         elif command == "download-model":
             repo_id = command_data.get("repo_id")

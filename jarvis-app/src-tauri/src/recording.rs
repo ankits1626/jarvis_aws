@@ -85,6 +85,31 @@ impl RecordingManager {
         self.current_child.is_some()
     }
     
+    /// Get the current recording filepath
+    /// 
+    /// Returns the filepath where the current recording is being written,
+    /// or None if no recording is active.
+    /// 
+    /// # Returns
+    /// 
+    /// `Some(PathBuf)` if recording is active, `None` otherwise
+    /// 
+    /// # Examples
+    /// 
+    /// ```no_run
+    /// use tauri::AppHandle;
+    /// use jarvis_app_lib::recording::RecordingManager;
+    /// 
+    /// fn get_filepath(recording_manager: &RecordingManager) {
+    ///     if let Some(path) = recording_manager.current_filepath() {
+    ///         println!("Recording to: {:?}", path);
+    ///     }
+    /// }
+    /// ```
+    pub fn current_filepath(&self) -> Option<&PathBuf> {
+        self.current_filepath.as_ref()
+    }
+    
     /// Generate a timestamped filepath for a new recording
     /// 
     /// Creates a filename in the format `YYYYMMDD_HHMMSS.pcm` using the current

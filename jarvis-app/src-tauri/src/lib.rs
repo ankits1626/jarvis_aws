@@ -1,4 +1,5 @@
 // Module declarations
+pub mod agents;
 pub mod browser;
 pub mod commands;
 pub mod error;
@@ -189,6 +190,9 @@ pub fn run() {
                 }
             }
             
+            // Initialize Co-Pilot agent state (None = not running)
+            app.manage(Arc::new(tokio::sync::Mutex::new(None::<agents::copilot::CoPilotAgent>)));
+            
             // Initialize ShortcutManager and register shortcuts
             let shortcut_manager = ShortcutManager::new(app.handle().clone());
             shortcut_manager.register_shortcuts()
@@ -278,6 +282,10 @@ pub fn run() {
             commands::switch_llm_model,
             commands::setup_mlx_venv,
             commands::reset_mlx_venv,
+            commands::start_copilot,
+            commands::stop_copilot,
+            commands::get_copilot_state,
+            commands::dismiss_copilot_question,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

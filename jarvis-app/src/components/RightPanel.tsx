@@ -1,7 +1,9 @@
+import { useState } from 'react';
 import { TranscriptDisplay } from './TranscriptDisplay';
+import { CoPilotPanel } from './CoPilotPanel';
 import RecordingDetailPanel from './RecordingDetailPanel';
 import GemDetailPanel from './GemDetailPanel';
-import { RecordingMetadata, TranscriptionSegment, RecordingTranscriptionState } from '../state/types';
+import { RecordingMetadata, TranscriptionSegment, RecordingTranscriptionState, CoPilotState, CoPilotStatus } from '../state/types';
 
 type ActiveNav = 'record' | 'recordings' | 'gems' | 'youtube' | 'browser' | 'settings';
 
@@ -24,6 +26,11 @@ interface RightPanelProps {
   aiAvailable: boolean;
   recordings: RecordingMetadata[];
   currentRecording: string | null;
+  copilotEnabled: boolean;
+  copilotStatus: CoPilotStatus;
+  copilotState: CoPilotState | null;
+  copilotError: string | null;
+  onDismissCopilotQuestion: (index: number) => void;
   style?: React.CSSProperties;
 }
 
@@ -46,8 +53,37 @@ export default function RightPanel({
   aiAvailable,
   recordings,
   currentRecording,
+  copilotEnabled,
+  copilotStatus,
+  copilotState,
+  copilotError,
+  onDismissCopilotQuestion,
   style
 }: RightPanelProps) {
+  const [activeTab, setActiveTab] = useState<'transcript' | 'copilot'>('transcript');
+  const [hasSeenCopilotUpdate, setHasSeenCopilotUpdate] = useState(false);
+
+  // Show notification dot when copilot has new data and user is on transcript tab
+  const showNotificationDot = copilotEnabled && 
+    activeTab === 'transcript' && 
+    copilotState && 
+    copilotState.cycle_metadata.cycle_number > 0 &&
+    !hasSeenCopilotUpdate;
+
+  // Clear notification when user switches to copilot tab
+  const handleTabChange = (tab: 'transcript' | 'copilot') => {
+    setActiveTab(tab);
+    if (tab === 'copilot') {
+      setHasSeenCopilotUpdate(true);
+    }
+  };
+
+  // Reset notification when copilot state updates
+  if (copilotState && copilotState.cycle_metadata.cycle_number > 0 && activeTab === 'transcript') {
+    if (hasSeenCopilotUpdate) {
+      setHasSeenCopilotUpdate(false);
+    }
+  }
   // Record nav: show live transcript when recording or after recording completes
   if (activeNav === 'record') {
     const isRecording = recordingState === 'recording';
@@ -55,6 +91,49 @@ export default function RightPanel({
     const recordingCompleted = !isRecording && hasTranscript;
 
     if (isRecording || recordingCompleted) {
+      // Show tabs when copilot is enabled and recording
+      if (copilotEnabled && isRecording) {
+        return (
+          <div className="right-panel" style={style}>
+            <div className="record-tabs-view">
+              <div className="tab-buttons">
+                <button
+                  className={`tab-button ${activeTab === 'transcript' ? 'active' : ''}`}
+                  onClick={() => handleTabChange('transcript')}
+                >
+                  Transcript
+                </button>
+                <button
+                  className={`tab-button ${activeTab === 'copilot' ? 'active' : ''}`}
+                  onClick={() => handleTabChange('copilot')}
+                >
+                  Co-Pilot
+                  {showNotificationDot && <span className="notification-dot" />}
+                </button>
+              </div>
+              <div className="tab-content">
+                {activeTab === 'transcript' ? (
+                  <TranscriptDisplay
+                    transcript={transcript}
+                    status={transcriptionStatus}
+                    error={transcriptionError}
+                    recordingFilename={currentRecording}
+                  />
+                ) : (
+                  <CoPilotPanel
+                    state={copilotState}
+                    status={copilotStatus}
+                    error={copilotError}
+                    onDismissQuestion={onDismissCopilotQuestion}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // Show transcript only when copilot is disabled
       return (
         <div className="right-panel" style={style}>
           <TranscriptDisplay

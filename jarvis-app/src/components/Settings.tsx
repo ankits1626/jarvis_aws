@@ -410,6 +410,92 @@ export function Settings({ onClose }: SettingsProps) {
     }
   };
 
+  const handleCopilotEnabledChange = async (enabled: boolean) => {
+    try {
+      const updatedSettings = {
+        ...settings,
+        copilot: {
+          ...settings.copilot,
+          enabled,
+        },
+      };
+      await invoke('update_settings', { settings: updatedSettings });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleCycleIntervalChange = async (interval: number) => {
+    try {
+      // Validate that interval is within range (30-120)
+      if (interval < 30 || interval > 120) {
+        setError('Cycle interval must be between 30 and 120 seconds');
+        return;
+      }
+      
+      // Validate that overlap < interval
+      if (settings.copilot.audio_overlap >= interval) {
+        setError('Audio overlap must be less than cycle interval');
+        return;
+      }
+      
+      const updatedSettings = {
+        ...settings,
+        copilot: {
+          ...settings.copilot,
+          cycle_interval: interval,
+        },
+      };
+      await invoke('update_settings', { settings: updatedSettings });
+      setError(null); // Clear any previous errors
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleAudioOverlapChange = async (overlap: number) => {
+    try {
+      // Validate that overlap is within range (0-15)
+      if (overlap < 0 || overlap > 15) {
+        setError('Audio overlap must be between 0 and 15 seconds');
+        return;
+      }
+      
+      // Validate that overlap < interval
+      if (overlap >= settings.copilot.cycle_interval) {
+        setError('Audio overlap must be less than cycle interval');
+        return;
+      }
+      
+      const updatedSettings = {
+        ...settings,
+        copilot: {
+          ...settings.copilot,
+          audio_overlap: overlap,
+        },
+      };
+      await invoke('update_settings', { settings: updatedSettings });
+      setError(null); // Clear any previous errors
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleAgentLoggingChange = async (enabled: boolean) => {
+    try {
+      const updatedSettings = {
+        ...settings,
+        copilot: {
+          ...settings.copilot,
+          agent_logging: enabled,
+        },
+      };
+      await invoke('update_settings', { settings: updatedSettings });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   return (
     <div className="settings-panel">
       <div className="settings-header">
@@ -918,6 +1004,72 @@ export function Settings({ onClose }: SettingsProps) {
             />
             <p className="setting-info">
               Shorter = lower latency, longer = better accuracy. Takes effect on next recording.
+            </p>
+          </div>
+        </section>
+
+        <section className="settings-section">
+          <h3>Co-Pilot Agent</h3>
+          <div className="setting-row">
+            <label htmlFor="copilot-enabled">
+              <input
+                type="checkbox"
+                id="copilot-enabled"
+                checked={settings.copilot.enabled}
+                onChange={(e) => handleCopilotEnabledChange(e.target.checked)}
+              />
+              Auto-start with recording
+            </label>
+            <p className="setting-info">
+              When enabled, Co-Pilot will automatically start analyzing audio when you begin recording
+            </p>
+          </div>
+          <div className="setting-row">
+            <label htmlFor="cycle-interval">
+              Analysis interval: {settings.copilot.cycle_interval}s
+            </label>
+            <input
+              type="range"
+              id="cycle-interval"
+              min="30"
+              max="120"
+              step="10"
+              value={settings.copilot.cycle_interval}
+              onChange={(e) => handleCycleIntervalChange(parseInt(e.target.value))}
+            />
+            <p className="setting-info">
+              How often Co-Pilot analyzes new audio (30-120 seconds). Changes take effect when Co-Pilot is restarted.
+            </p>
+          </div>
+          <div className="setting-row">
+            <label htmlFor="audio-overlap">
+              Audio overlap: {settings.copilot.audio_overlap}s
+            </label>
+            <input
+              type="range"
+              id="audio-overlap"
+              min="0"
+              max="15"
+              step="1"
+              value={settings.copilot.audio_overlap}
+              onChange={(e) => handleAudioOverlapChange(parseInt(e.target.value))}
+            />
+            <p className="setting-info">
+              Overlap between audio chunks to bridge mid-sentence boundaries (0-15 seconds). Changes take effect when Co-Pilot is restarted.
+            </p>
+          </div>
+          <div className="setting-row">
+            <label htmlFor="agent-logging">
+              <input
+                type="checkbox"
+                id="agent-logging"
+                checked={settings.copilot.agent_logging}
+                onChange={(e) => handleAgentLoggingChange(e.target.checked)}
+              />
+              Save agent logs
+            </label>
+            <p className="setting-info">
+              Write detailed prompt/response logs for debugging and quality tuning
             </p>
           </div>
         </section>

@@ -10,7 +10,23 @@ use crate::wav::WavConverter;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
-use tauri::{Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+
+/// Append a timestamped log line to ~/Library/Application Support/com.jarvis.app/logs/gem_save.log
+fn log_gem_save(msg: &str) {
+    if let Some(data_dir) = dirs::data_dir() {
+        let log_dir = data_dir.join("com.jarvis.app").join("logs");
+        let _ = std::fs::create_dir_all(&log_dir);
+        let log_path = log_dir.join("gem_save.log");
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        let line = format!("[{}] {}\n", timestamp, msg);
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+    }
+}
 
 /// Helper function to map PageGist to Gem
 /// 
@@ -233,11 +249,14 @@ pub async fn save_gem(
     settings_manager: State<'_, Arc<RwLock<SettingsManager>>>,
 ) -> Result<Gem, String> {
     // Convert PageGist to Gem using the helper function
+    log_gem_save(&format!("save_gem called: url={}, title={}", gist.url, gist.title));
     let mut gem = page_gist_to_gem(gist);
+    log_gem_save(&format!("save_gem: gem id={}, content_len={:?}", gem.id, gem.content.as_ref().map(|c| c.len())));
 
     // Check if AI enrichment is available
     let availability = intel_provider.check_availability().await;
-    
+    log_gem_save(&format!("save_gem: intel available={}", availability.available));
+
     if availability.available {
         // Get provider name and model from settings
         let (provider_name, model_name, transcription_engine) = {
@@ -267,6 +286,7 @@ pub async fn save_gem(
                 }
                 Err(e) => {
                     // Log error but continue with save
+                    log_gem_save(&format!("save_gem: WARN enrichment failed: {}", e));
                     eprintln!("Failed to enrich gem: {}", e);
                 }
             }
@@ -274,7 +294,13 @@ pub async fn save_gem(
     }
 
     // Save via GemStore trait (with or without enrichment)
-    gem_store.save(gem).await
+    log_gem_save(&format!("save_gem: saving gem id={}", gem.id));
+    let result = gem_store.save(gem).await;
+    match &result {
+        Ok(g) => log_gem_save(&format!("save_gem: SUCCESS id={}", g.id)),
+        Err(e) => log_gem_save(&format!("save_gem: ERROR {}", e)),
+    }
+    result
 }
 
 /// List gems with pagination
@@ -875,31 +901,69 @@ pub async fn save_recording_gem(
     transcript: String,
     language: String,
     created_at: u64,
+    copilot_data: Option<serde_json::Value>,
     gem_store: State<'_, Arc<dyn GemStore>>,
     intel_provider: State<'_, Arc<dyn IntelProvider>>,
     settings_manager: State<'_, Arc<RwLock<SettingsManager>>>,
 ) -> Result<Gem, String> {
     // Check for existing gem
-    let existing_gem = gem_store.find_by_recording_filename(&filename).await?;
-    
+    log_gem_save(&format!("save_recording_gem called: filename={}, transcript_len={}, language={}, copilot_data={}",
+        filename, transcript.len(), language, copilot_data.is_some()));
+
+    let existing_gem = gem_store.find_by_recording_filename(&filename).await
+        .map_err(|e| {
+            log_gem_save(&format!("ERROR find_by_recording_filename: {}", e));
+            e
+        })?;
+
+    log_gem_save(&format!("existing_gem found: {}", existing_gem.is_some()));
+
     let mut gem = if let Some(preview) = existing_gem {
         // Update existing gem
-        let mut existing = gem_store.get(&preview.id).await?
-            .ok_or_else(|| format!("Gem with id '{}' not found", preview.id))?;
-        
+        log_gem_save(&format!("updating existing gem id={}", preview.id));
+        let mut existing = gem_store.get(&preview.id).await
+            .map_err(|e| {
+                log_gem_save(&format!("ERROR gem_store.get: {}", e));
+                e
+            })?
+            .ok_or_else(|| {
+                let msg = format!("Gem with id '{}' not found", preview.id);
+                log_gem_save(&format!("ERROR {}", msg));
+                msg
+            })?;
+
         existing.transcript = Some(transcript.clone());
         existing.transcript_language = Some(language.clone());
+
+        // Add Co-Pilot data if provided (Requirement 10.1, 10.2)
+        if let Some(copilot) = copilot_data {
+            existing.source_meta["copilot"] = copilot;
+        }
+
         existing
     } else {
         // Create new gem with deterministic URL
+        log_gem_save(&format!("creating new gem for filename={}", filename));
         let title = if let Some(dt) = chrono::DateTime::from_timestamp(created_at as i64, 0) {
             format!("Audio Transcript - {}", dt.format("%Y-%m-%d %H:%M:%S"))
         } else {
             format!("Audio Transcript - {}", filename)
         };
-        
+
+        let mut source_meta = serde_json::json!({
+            "recording_filename": filename,
+            "source": "recording_transcription"
+        });
+
+        // Add Co-Pilot data if provided (Requirement 10.1, 10.2)
+        if let Some(copilot) = copilot_data {
+            source_meta["copilot"] = copilot;
+        }
+
+        let new_id = uuid::Uuid::new_v4().to_string();
+        log_gem_save(&format!("new gem id={}", new_id));
         Gem {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: new_id,
             source_type: "Other".to_string(),
             source_url: format!("jarvis://recording/{}", filename),
             domain: "jarvis-app".to_string(),
@@ -907,10 +971,7 @@ pub async fn save_recording_gem(
             author: None,
             description: None,
             content: None,
-            source_meta: serde_json::json!({
-                "recording_filename": filename,
-                "source": "recording_transcription"
-            }),
+            source_meta,
             captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
             transcript: Some(transcript.clone()),
@@ -919,7 +980,9 @@ pub async fn save_recording_gem(
     };
     
     // Try to generate AI enrichment (tags/summary) from transcript
+    log_gem_save(&format!("gem ready for enrichment, id={}", gem.id));
     let availability = intel_provider.check_availability().await;
+    log_gem_save(&format!("intel availability: {}, transcript_empty: {}", availability.available, transcript.trim().is_empty()));
     if availability.available && !transcript.trim().is_empty() {
         let (provider_name, model_name) = {
             let manager = settings_manager.read()
@@ -945,18 +1008,26 @@ pub async fn save_recording_gem(
                         gem.ai_enrichment = Some(ai_enrichment);
                     }
                     Err(e) => {
+                        log_gem_save(&format!("WARN failed to generate summary: {}", e));
                         eprintln!("Failed to generate summary: {}", e);
                     }
                 }
             }
             Err(e) => {
+                log_gem_save(&format!("WARN failed to generate tags: {}", e));
                 eprintln!("Failed to generate tags: {}", e);
             }
         }
     }
-    
+
     // Save and return
-    gem_store.save(gem).await
+    log_gem_save(&format!("saving gem id={} to store", gem.id));
+    let result = gem_store.save(gem).await;
+    match &result {
+        Ok(g) => log_gem_save(&format!("SUCCESS gem saved id={}", g.id)),
+        Err(e) => log_gem_save(&format!("ERROR gem_store.save failed: {}", e)),
+    }
+    result
 }
 
 /// Check if AI enrichment is available
@@ -3928,3 +3999,245 @@ pub async fn switch_llm_model(
         }
     }
 
+
+// ============================================================================
+// Co-Pilot Agent Commands
+// ============================================================================
+
+/// Start the Co-Pilot agent for live recording intelligence
+///
+/// This command starts the Co-Pilot agent which analyzes audio during recording
+/// and produces real-time actionable insights (summary, questions, concepts).
+///
+/// # Arguments
+///
+/// * `recording_manager` - Managed state containing the RecordingManager
+/// * `settings_manager` - Managed state containing settings
+/// * `intel_provider` - Managed state containing the IntelProvider trait object
+/// * `app_handle` - Tauri app handle for agent initialization
+///
+/// # Returns
+///
+/// * `Ok(())` - Agent started successfully
+/// * `Err(String)` - Error message if start fails
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - No recording is currently active
+/// - Agent is already running
+/// - Recording file doesn't exist
+///
+/// # Examples
+///
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+///
+/// try {
+///   await invoke('start_copilot');
+///   console.log('Co-Pilot agent started');
+/// } catch (error) {
+///   console.error(`Failed to start Co-Pilot: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn start_copilot(
+    recording_manager: State<'_, Mutex<RecordingManager>>,
+    settings_manager: State<'_, Arc<RwLock<SettingsManager>>>,
+    intel_provider: State<'_, Arc<dyn IntelProvider>>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    use crate::agents::copilot::CoPilotAgent;
+    
+    // Get recording filepath and verify recording is active
+    let recording_filepath = {
+        let manager = recording_manager.lock()
+            .map_err(|e| format!("Failed to acquire recording lock: {}", e))?;
+        
+        if !manager.is_recording() {
+            return Err("No recording in progress".to_string());
+        }
+        
+        manager.current_filepath()
+            .cloned()
+            .ok_or_else(|| "No recording filepath found".to_string())?
+    };
+    
+    // Get copilot settings
+    let settings = {
+        let manager = settings_manager.read()
+            .map_err(|e| format!("Failed to acquire settings lock: {}", e))?;
+        manager.get().copilot.clone()
+    };
+    
+    // Get or create agent state from app state
+    let agent_state = app_handle.state::<Arc<tokio::sync::Mutex<Option<CoPilotAgent>>>>();
+    let mut agent_guard = agent_state.lock().await;
+    
+    // Check if agent already running
+    if agent_guard.is_some() {
+        return Err("Co-Pilot agent is already running".to_string());
+    }
+    
+    // Create and start agent
+    let provider = intel_provider.inner().clone();
+    let mut agent = CoPilotAgent::new(app_handle.clone());
+    agent.start(provider, recording_filepath, settings).await?;
+    
+    *agent_guard = Some(agent);
+    
+    Ok(())
+}
+
+/// Stop the Co-Pilot agent
+///
+/// This command stops the Co-Pilot agent gracefully, waiting for any in-flight
+/// inference to complete (up to 120s timeout), and returns the final agent state.
+///
+/// # Arguments
+///
+/// * `app_handle` - Tauri app handle to access agent state
+///
+/// # Returns
+///
+/// * `Ok(CoPilotState)` - Final agent state after stopping
+/// * `Err(String)` - Error message if stop fails
+///
+/// # Errors
+///
+/// Returns an error if no Co-Pilot agent is currently running.
+///
+/// # Examples
+///
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+///
+/// interface CoPilotState {
+///   running_summary: string;
+///   key_points: string[];
+///   decisions: string[];
+///   action_items: string[];
+///   open_questions: string[];
+///   suggested_questions: SuggestedQuestion[];
+///   key_concepts: KeyConcept[];
+///   cycle_metadata: CycleMetadata;
+/// }
+///
+/// try {
+///   const finalState: CoPilotState = await invoke('stop_copilot');
+///   console.log(`Agent stopped. Final cycle: ${finalState.cycle_metadata.cycle_number}`);
+/// } catch (error) {
+///   console.error(`Failed to stop Co-Pilot: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn stop_copilot(
+    app_handle: AppHandle,
+) -> Result<crate::agents::copilot::CoPilotState, String> {
+    use crate::agents::copilot::CoPilotAgent;
+    
+    let agent_state = app_handle.state::<Arc<tokio::sync::Mutex<Option<CoPilotAgent>>>>();
+    let mut agent_guard = agent_state.lock().await;
+    
+    let mut agent = agent_guard.take()
+        .ok_or_else(|| "No Co-Pilot agent running".to_string())?;
+    
+    let final_state = agent.stop().await;
+    
+    Ok(final_state)
+}
+
+/// Get the current Co-Pilot agent state
+///
+/// This command returns the current state of the Co-Pilot agent without stopping it.
+/// Useful for polling or refreshing the UI.
+///
+/// # Arguments
+///
+/// * `app_handle` - Tauri app handle to access agent state
+///
+/// # Returns
+///
+/// * `Ok(CoPilotState)` - Current agent state
+/// * `Err(String)` - Error message if agent is not running
+///
+/// # Errors
+///
+/// Returns an error if no Co-Pilot agent is currently running.
+///
+/// # Examples
+///
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+///
+/// try {
+///   const state: CoPilotState = await invoke('get_copilot_state');
+///   console.log(`Current cycle: ${state.cycle_metadata.cycle_number}`);
+/// } catch (error) {
+///   console.error(`Failed to get Co-Pilot state: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn get_copilot_state(
+    app_handle: AppHandle,
+) -> Result<crate::agents::copilot::CoPilotState, String> {
+    use crate::agents::copilot::CoPilotAgent;
+    
+    let agent_state = app_handle.state::<Arc<tokio::sync::Mutex<Option<CoPilotAgent>>>>();
+    let agent_guard = agent_state.lock().await;
+    
+    let agent = agent_guard.as_ref()
+        .ok_or_else(|| "No Co-Pilot agent running".to_string())?;
+    
+    Ok(agent.get_state().await)
+}
+
+/// Dismiss a suggested question by index
+///
+/// This command marks a suggested question as dismissed. Dismissed questions
+/// will not be shown in the UI but will be preserved if the same question is
+/// suggested again in a future cycle.
+///
+/// # Arguments
+///
+/// * `index` - The index of the question to dismiss (0-based)
+/// * `app_handle` - Tauri app handle to access agent state
+///
+/// # Returns
+///
+/// * `Ok(())` - Question dismissed successfully
+/// * `Err(String)` - Error message if dismiss fails
+///
+/// # Errors
+///
+/// Returns an error if no Co-Pilot agent is currently running.
+///
+/// # Examples
+///
+/// ```typescript
+/// import { invoke } from '@tauri-apps/api/core';
+///
+/// try {
+///   await invoke('dismiss_copilot_question', { index: 0 });
+///   console.log('Question dismissed');
+/// } catch (error) {
+///   console.error(`Failed to dismiss question: ${error}`);
+/// }
+/// ```
+#[tauri::command]
+pub async fn dismiss_copilot_question(
+    index: usize,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    use crate::agents::copilot::CoPilotAgent;
+    
+    let agent_state = app_handle.state::<Arc<tokio::sync::Mutex<Option<CoPilotAgent>>>>();
+    let agent_guard = agent_state.lock().await;
+    
+    let agent = agent_guard.as_ref()
+        .ok_or_else(|| "No Co-Pilot agent running".to_string())?;
+    
+    agent.dismiss_question(index).await;
+    
+    Ok(())
+}

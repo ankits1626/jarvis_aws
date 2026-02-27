@@ -32,6 +32,8 @@ struct NdjsonCommand {
     audio_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     capabilities: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<String>,
 }
 
 /// NDJSON response structure from MLX sidecar
@@ -61,6 +63,23 @@ struct NdjsonResponse {
     transcript: Option<String>,
     #[serde(default)]
     capabilities: Option<Vec<String>>,
+    // Co-Pilot analysis fields
+    #[serde(default)]
+    new_content: Option<String>,
+    #[serde(default)]
+    updated_summary: Option<String>,
+    #[serde(default)]
+    key_points: Option<Vec<String>>,
+    #[serde(default)]
+    decisions: Option<Vec<String>>,
+    #[serde(default)]
+    action_items: Option<Vec<String>>,
+    #[serde(default)]
+    open_questions: Option<Vec<String>>,
+    #[serde(default)]
+    suggested_questions: Option<Vec<serde_json::Value>>,
+    #[serde(default)]
+    key_concepts: Option<Vec<serde_json::Value>>,
 }
 
 /// MLX provider state
@@ -317,6 +336,7 @@ impl MlxProvider {
             destination: None,
             audio_path: None,
             capabilities: None,
+            context: None,
         };
 
         let response = self.send_command(cmd, 15).await?;
@@ -357,6 +377,7 @@ impl MlxProvider {
             destination: None,
             audio_path: None,
             capabilities: Some(capabilities),
+            context: None,
         };
 
         let response = self.send_command(cmd, 60).await?;
@@ -444,6 +465,7 @@ impl MlxProvider {
             destination: None,
             audio_path: None,
             capabilities: None,
+            context: None,
         };
 
         // Try to send shutdown command (ignore errors)
@@ -473,6 +495,7 @@ impl MlxProvider {
             destination: None,
             audio_path: None,
             capabilities: None,
+            context: None,
         };
 
         let response = self.send_command(cmd, 60).await?;
@@ -504,6 +527,7 @@ impl MlxProvider {
             destination: None,
             audio_path: None,
             capabilities: None,
+            context: None,
         };
 
         let response = self.send_command(cmd, 60).await?;
@@ -541,6 +565,7 @@ impl MlxProvider {
             destination: None,
             audio_path: Some(audio_path_str.clone()),
             capabilities: None,
+            context: None,
         };
 
         // 600s (10 min) timeout for transcript generation — large audio files need time
@@ -561,6 +586,100 @@ impl MlxProvider {
 
         eprintln!("MLX: Transcript generation complete for '{}' (language: {})", audio_path_str, language);
         Ok(super::provider::TranscriptResult { language, transcript })
+    }
+    
+    /// Analyze audio chunk with running context for Co-Pilot.
+    ///
+    /// Uses a 120s timeout as specified in requirements (R11.2).
+    async fn copilot_analyze_internal(
+        &self,
+        audio_path: &std::path::Path,
+        context: &str,
+    ) -> Result<super::provider::CoPilotCycleResult, String> {
+        let audio_path_str = audio_path.to_string_lossy().to_string();
+        eprintln!("MLX: Starting Co-Pilot analysis for '{}'", audio_path_str);
+
+        let cmd = NdjsonCommand {
+            command: "copilot-analyze".to_string(),
+            model_path: None,
+            content: None,
+            repo_id: None,
+            destination: None,
+            audio_path: Some(audio_path_str.clone()),
+            capabilities: None,
+            context: Some(context.to_string()),
+        };
+
+        // 120s timeout for Co-Pilot analysis (R11.2)
+        let response = self.send_command(cmd, 120).await
+            .map_err(|e| {
+                eprintln!("MLX: Co-Pilot analysis failed for '{}': {}", audio_path_str, e);
+                e
+            })?;
+
+        if response.response_type == "error" {
+            let err = response.error.unwrap_or_else(|| "Co-Pilot analysis failed".to_string());
+            eprintln!("MLX: Co-Pilot analysis error for '{}': {}", audio_path_str, err);
+            return Err(err);
+        }
+
+        // Parse response with graceful handling of missing fields (R2.7)
+        let new_content = response.new_content.unwrap_or_default();
+        let updated_summary = response.updated_summary.unwrap_or_default();
+        let key_points = response.key_points.unwrap_or_default();
+        let decisions = response.decisions.unwrap_or_default();
+        let action_items = response.action_items.unwrap_or_default();
+        let open_questions = response.open_questions.unwrap_or_default();
+
+        // Parse suggested_questions array
+        let suggested_questions = response.suggested_questions
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| {
+                if let (Some(question), Some(reason)) = (
+                    v.get("question").and_then(|q| q.as_str()),
+                    v.get("reason").and_then(|r| r.as_str()),
+                ) {
+                    Some(super::provider::CoPilotQuestion {
+                        question: question.to_string(),
+                        reason: reason.to_string(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Parse key_concepts array
+        let key_concepts = response.key_concepts
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| {
+                if let (Some(term), Some(context)) = (
+                    v.get("term").and_then(|t| t.as_str()),
+                    v.get("context").and_then(|c| c.as_str()),
+                ) {
+                    Some(super::provider::CoPilotConcept {
+                        term: term.to_string(),
+                        context: context.to_string(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        eprintln!("MLX: Co-Pilot analysis complete for '{}'", audio_path_str);
+        Ok(super::provider::CoPilotCycleResult {
+            new_content,
+            updated_summary,
+            key_points,
+            decisions,
+            action_items,
+            open_questions,
+            suggested_questions,
+            key_concepts,
+        })
     }
 }
 
@@ -661,5 +780,13 @@ impl IntelProvider for MlxProvider {
 
     async fn generate_transcript(&self, audio_path: &std::path::Path) -> Result<super::provider::TranscriptResult, String> {
         self.generate_transcript_internal(audio_path).await
+    }
+    
+    async fn copilot_analyze(
+        &self,
+        audio_path: &std::path::Path,
+        context: &str,
+    ) -> Result<super::provider::CoPilotCycleResult, String> {
+        self.copilot_analyze_internal(audio_path, context).await
     }
 }

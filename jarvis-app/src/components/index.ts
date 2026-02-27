@@ -11,3 +11,4 @@ export { Settings } from './Settings';
 export { ModelList } from './ModelList';
 export { YouTubeSection } from './YouTubeSection';
 export { GemsPanel } from './GemsPanel';
+export { CoPilotPanel } from './CoPilotPanel';

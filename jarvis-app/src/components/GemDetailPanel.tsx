@@ -2,6 +2,18 @@ import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Gem } from '../state/types';
 
+/** Shape of Co-Pilot data stored in gem's source_meta.copilot */
+interface CoPilotGemData {
+  summary?: string;
+  key_points?: string[];
+  decisions?: string[];
+  action_items?: string[];
+  open_questions?: string[];
+  key_concepts?: Array<{ term: string; context: string }>;
+  total_cycles?: number;
+  total_audio_analyzed_seconds?: number;
+}
+
 interface GemDetailPanelProps {
   gemId: string;
   onDelete: () => void;
@@ -72,6 +84,7 @@ export default function GemDetailPanel({
   }
 
   const isAudioGem = gem.source_url.startsWith('jarvis://recording/');
+  const copilot = gem.source_meta?.copilot as CoPilotGemData | undefined;
 
   return (
     <div className="gem-detail-panel">
@@ -98,6 +111,96 @@ export default function GemDetailPanel({
           <span className="metadata-value">{formatDate(gem.captured_at)}</span>
         </div>
       </div>
+
+      {/* Co-Pilot Data (Requirement 10.3, 10.4, 10.5, 10.6) */}
+      {copilot && (
+        <div className="gem-copilot-section">
+          <h4 className="copilot-section-title">Co-Pilot Analysis</h4>
+          
+          {copilot.summary && (
+            <div className="copilot-summary">
+              <h5>Summary</h5>
+              <p>{copilot.summary}</p>
+            </div>
+          )}
+
+          {copilot.key_points && copilot.key_points.length > 0 && (
+            <div className="copilot-key-points">
+              <h5>Key Points</h5>
+              <ul>
+                {copilot.key_points.map((point: string, i: number) => (
+                  <li key={i}>{point}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {copilot.decisions && copilot.decisions.length > 0 && (
+            <div className="copilot-decisions">
+              <h5>Decisions</h5>
+              <ul>
+                {copilot.decisions.map((decision: string, i: number) => (
+                  <li key={i}>
+                    <span className="decision-icon">✓</span>
+                    {decision}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {copilot.action_items && copilot.action_items.length > 0 && (
+            <div className="copilot-action-items">
+              <h5>Action Items</h5>
+              <ul>
+                {copilot.action_items.map((item: string, i: number) => (
+                  <li key={i}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {copilot.open_questions && copilot.open_questions.length > 0 && (
+            <div className="copilot-open-questions">
+              <h5>Open Questions</h5>
+              <ul>
+                {copilot.open_questions.map((question: string, i: number) => (
+                  <li key={i}>{question}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {copilot.key_concepts && copilot.key_concepts.length > 0 && (
+            <div className="copilot-key-concepts">
+              <h5>Key Concepts</h5>
+              <div className="concepts-grid">
+                {copilot.key_concepts.map((concept: any, i: number) => (
+                  <div key={i} className="concept-chip" title={concept.context}>
+                    {concept.term}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {copilot.total_cycles && (
+            <div className="copilot-metadata">
+              <span className="metadata-label">Analysis cycles:</span>
+              <span className="metadata-value">{copilot.total_cycles}</span>
+              {copilot.total_audio_analyzed_seconds && (
+                <>
+                  <span className="metadata-separator">•</span>
+                  <span className="metadata-label">Audio analyzed:</span>
+                  <span className="metadata-value">
+                    {Math.floor(copilot.total_audio_analyzed_seconds / 60)}m {copilot.total_audio_analyzed_seconds % 60}s
+                  </span>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {gem.ai_enrichment?.tags && gem.ai_enrichment.tags.length > 0 && (
         <div className="gem-tags">

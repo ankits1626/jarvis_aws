@@ -39,6 +39,14 @@ export function TranscriptDisplay({ transcript, status, error, recordingFilename
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  // Capture recording filename before it gets cleared on RECORDING_STOPPED
+  const capturedFilename = useRef<string | null>(null);
+  useEffect(() => {
+    if (recordingFilename) {
+      capturedFilename.current = recordingFilename;
+    }
+  }, [recordingFilename]);
+
   // Process transcript to handle partial → final replacement
   const displaySegments = useMemo(() => processTranscript(transcript), [transcript]);
 
@@ -50,6 +58,7 @@ export function TranscriptDisplay({ transcript, status, error, recordingFilename
   }, [displaySegments]);
 
   const handleSaveGem = async () => {
+    console.log('[TranscriptDisplay] Save Gem clicked, finalSegments:', displaySegments.filter(s => s.is_final).length, 'recordingFilename:', recordingFilename);
     setSaving(true);
     setSaveError(null);
 
@@ -59,6 +68,8 @@ export function TranscriptDisplay({ transcript, status, error, recordingFilename
         .filter(s => s.is_final)
         .map(s => s.text)
         .join(' ');
+
+      console.log('[TranscriptDisplay] fullText length:', fullText.length);
 
       // Construct PageGist object
       const gist: PageGist = {
@@ -74,13 +85,16 @@ export function TranscriptDisplay({ transcript, status, error, recordingFilename
         extra: {
           segment_count: displaySegments.filter(s => s.is_final).length,
           source: 'audio_transcription',
-          recording_filename: recordingFilename || null,
+          recording_filename: recordingFilename || capturedFilename.current || null,
         },
       };
 
+      console.log('[TranscriptDisplay] invoking save_gem with gist url:', gist.url);
       await invoke<Gem>('save_gem', { gist });
+      console.log('[TranscriptDisplay] save_gem SUCCESS');
       setSaved(true);
     } catch (err) {
+      console.error('[TranscriptDisplay] save_gem FAILED:', err);
       setSaveError(String(err));
     } finally {
       setSaving(false);

@@ -220,6 +220,21 @@ export interface IntelligenceSettings {
   python_path: string;
 }
 
+/** Co-Pilot settings matching Rust CoPilotSettings struct */
+export interface CoPilotSettings {
+  /** Whether Co-Pilot starts automatically when recording begins */
+  enabled: boolean;
+  
+  /** Seconds between agent cycles (30-120) */
+  cycle_interval: number;
+  
+  /** Seconds of overlap between consecutive audio chunks (0-15) */
+  audio_overlap: number;
+  
+  /** Whether to write prompt/response logs to disk */
+  agent_logging: boolean;
+}
+
 /** Main settings structure matching Rust Settings struct */
 export interface Settings {
   /** Transcription-specific settings */
@@ -227,6 +242,9 @@ export interface Settings {
   
   /** Intelligence-specific settings */
   intelligence: IntelligenceSettings;
+  
+  /** Co-Pilot agent settings */
+  copilot: CoPilotSettings;
 }
 
 /** Model status enum matching Rust ModelStatus */
@@ -607,5 +625,104 @@ export interface MlxDiagnostics {
 /** Progress event during MLX venv setup */
 export interface MlxVenvProgressEvent {
   phase: 'creating_venv' | 'installing_deps' | 'validating';
+  message: string;
+}
+
+/**
+ * Co-Pilot Agent types
+ * 
+ * These types define the structure for the live recording intelligence system
+ */
+
+/** Co-Pilot status type */
+export type CoPilotStatus = "idle" | "starting" | "processing" | "stopped" | "error";
+
+/** Suggested question from Co-Pilot matching Rust SuggestedQuestion struct */
+export interface SuggestedQuestion {
+  /** The question text */
+  question: string;
+  
+  /** Reason why this question is relevant */
+  reason: string;
+  
+  /** Cycle number when this question was added */
+  cycle_added: number;
+  
+  /** Whether the user has dismissed this question */
+  dismissed: boolean;
+}
+
+/** Key concept from Co-Pilot matching Rust KeyConcept struct */
+export interface KeyConcept {
+  /** The concept term */
+  term: string;
+  
+  /** Context where this concept appeared */
+  context: string;
+  
+  /** Cycle number when this concept was first added */
+  cycle_added: number;
+  
+  /** Number of times this concept has been mentioned */
+  mention_count: number;
+}
+
+/** Cycle metadata matching Rust CycleMetadata struct */
+export interface CycleMetadata {
+  /** Current cycle number */
+  cycle_number: number;
+  
+  /** ISO 8601 timestamp of last update */
+  last_updated_at: string;
+  
+  /** Whether a cycle is currently processing */
+  processing: boolean;
+  
+  /** Number of failed cycles */
+  failed_cycles: number;
+  
+  /** Total audio analyzed in seconds */
+  total_audio_seconds: number;
+}
+
+/** Co-Pilot state matching Rust CoPilotState struct */
+export interface CoPilotState {
+  /** Rolling summary of the conversation */
+  running_summary: string;
+  
+  /** Key points extracted from the conversation */
+  key_points: string[];
+  
+  /** Decisions made during the conversation */
+  decisions: string[];
+  
+  /** Action items identified */
+  action_items: string[];
+  
+  /** Open questions that need answers */
+  open_questions: string[];
+  
+  /** Suggested questions for the user (max 5) */
+  suggested_questions: SuggestedQuestion[];
+  
+  /** Key concepts mentioned in the conversation */
+  key_concepts: KeyConcept[];
+  
+  /** Cycle metadata */
+  cycle_metadata: CycleMetadata;
+}
+
+/** Payload for copilot-updated event */
+export interface CoPilotUpdatedEvent {
+  state: CoPilotState;
+}
+
+/** Payload for copilot-status event */
+export interface CoPilotStatusEvent {
+  status: CoPilotStatus;
+}
+
+/** Payload for copilot-error event */
+export interface CoPilotErrorEvent {
   message: string;
 }

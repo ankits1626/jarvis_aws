@@ -52,6 +52,7 @@ mod property_tests {
                 },
                 browser: crate::settings::BrowserSettings::default(),
                 intelligence: crate::settings::IntelligenceSettings::default(),
+                copilot: crate::settings::CoPilotSettings::default(),
             };
 
             // Verify the settings can be updated successfully
@@ -145,6 +146,7 @@ mod property_tests {
             },
             browser: crate::settings::BrowserSettings::default(),
             intelligence: crate::settings::IntelligenceSettings::default(),
+            copilot: crate::settings::CoPilotSettings::default(),
         };
 
         // Test that the manager update succeeds

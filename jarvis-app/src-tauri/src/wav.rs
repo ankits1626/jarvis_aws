@@ -47,11 +47,41 @@ impl WavConverter {
         let pcm_data = std::fs::read(pcm_path)
             .map_err(|e| format!("Failed to read PCM file {:?}: {}", pcm_path, e))?;
         
+        Self::from_pcm_bytes(&pcm_data)
+    }
+    
+    /// Convert PCM bytes to WAV format by prepending a 44-byte WAV header
+    /// 
+    /// Takes raw PCM data and prepends a standard WAV header with the correct
+    /// audio parameters (16kHz, 16-bit, mono).
+    /// 
+    /// # Arguments
+    /// 
+    /// * `pcm_data` - Raw PCM audio data (16kHz, 16-bit, mono)
+    /// 
+    /// # Returns
+    /// 
+    /// A `Vec<u8>` containing the complete WAV file (header + PCM data)
+    /// 
+    /// # Errors
+    /// 
+    /// Returns an error if the PCM data is too large (> 4GB, WAV format limitation)
+    /// 
+    /// # Examples
+    /// 
+    /// ```no_run
+    /// use jarvis_app_lib::wav::WavConverter;
+    /// 
+    /// let pcm_data = vec![0u8; 32000]; // 1 second of audio
+    /// let wav_data = WavConverter::from_pcm_bytes(&pcm_data)?;
+    /// # Ok::<(), String>(())
+    /// ```
+    pub fn from_pcm_bytes(pcm_data: &[u8]) -> Result<Vec<u8>, String> {
         // Check if file size exceeds WAV format limit (4GB - 8 bytes for RIFF header)
         let data_size = pcm_data.len() as u64;
         if data_size > (u32::MAX as u64 - 36) {
             return Err(format!(
-                "PCM file too large ({} bytes). WAV format supports maximum {} bytes",
+                "PCM data too large ({} bytes). WAV format supports maximum {} bytes",
                 data_size,
                 u32::MAX as u64 - 36
             ));
@@ -63,7 +93,7 @@ impl WavConverter {
         // Concatenate header + PCM data
         let mut wav_data = Vec::with_capacity(header.len() + pcm_data.len());
         wav_data.extend_from_slice(&header);
-        wav_data.extend_from_slice(&pcm_data);
+        wav_data.extend_from_slice(pcm_data);
         
         Ok(wav_data)
     }

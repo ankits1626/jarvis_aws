@@ -12,7 +12,7 @@ import { BrowserTool } from "./components/BrowserTool";
 import { GemsPanel } from "./components/GemsPanel";
 import LeftNav from "./components/LeftNav";
 import RightPanel from "./components/RightPanel";
-import type { YouTubeDetectedEvent, TranscriptResult, RecordingTranscriptionState, GemPreview, AvailabilityResult, Gem } from "./state/types";
+import type { YouTubeDetectedEvent, TranscriptResult, RecordingTranscriptionState, GemPreview, AvailabilityResult, Gem, CoPilotState, CoPilotStatus } from "./state/types";
 import "./App.css";
 
 type ActiveNav = 'record' | 'recordings' | 'gems' | 'youtube' | 'browser' | 'settings';
@@ -62,6 +62,12 @@ function App() {
   // Recording transcription state
   const [recordingStates, setRecordingStates] = useState<Record<string, RecordingTranscriptionState>>({});
   const [aiAvailable, setAiAvailable] = useState<boolean>(false);
+
+  // Co-Pilot agent state
+  const [copilotEnabled, setCopilotEnabled] = useState<boolean>(false);
+  const [copilotStatus, setCopilotStatus] = useState<CoPilotStatus>('idle');
+  const [copilotState, setCopilotState] = useState<CoPilotState | null>(null);
+  const [copilotError, setCopilotError] = useState<string | null>(null);
 
   // Load recordings on mount (Requirement 1.2)
   useEffect(() => {
@@ -151,6 +157,56 @@ function App() {
       setToastError(`AI enrichment error: ${event.error}`);
     }, [])
   );
+
+  // Listen for Co-Pilot state updates (Requirement 6.1)
+  useTauriEvent<CoPilotState>(
+    'copilot-updated',
+    useCallback((state) => {
+      console.log('[App] Co-Pilot state updated:', state);
+      setCopilotState(state);
+    }, [])
+  );
+
+  // Listen for Co-Pilot status changes (Requirement 6.2)
+  useTauriEvent<{ status: CoPilotStatus }>(
+    'copilot-status',
+    useCallback((event) => {
+      console.log('[App] Co-Pilot status changed:', event.status);
+      setCopilotStatus(event.status);
+    }, [])
+  );
+
+  // Listen for Co-Pilot errors (Requirement 6.3)
+  useTauriEvent<{ error: string; cycle: number }>(
+    'copilot-error',
+    useCallback((event) => {
+      console.error('[App] Co-Pilot error:', event.error);
+      setCopilotError(event.error);
+      setToastError(`Co-Pilot error: ${event.error}`);
+    }, [])
+  );
+
+  // Automatic Co-Pilot stop when recording stops (Requirement 3.6)
+  useEffect(() => {
+    const stopCopilotIfNeeded = async () => {
+      // If copilot is enabled but recording is not active, stop the agent
+      if (copilotEnabled && state.recordingState !== 'recording') {
+        console.log('[App] Recording stopped, automatically stopping Co-Pilot agent');
+        try {
+          await invoke('stop_copilot');
+          setCopilotEnabled(false);
+          setCopilotStatus('stopped');
+          setCopilotState(null);
+          setCopilotError(null);
+        } catch (error) {
+          console.error('[App] Failed to stop Co-Pilot agent:', error);
+          // Don't show error to user - this is automatic cleanup
+        }
+      }
+    };
+
+    stopCopilotIfNeeded();
+  }, [state.recordingState, copilotEnabled]);
 
   // Cleanup audio URL when component unmounts or selection changes
   useEffect(() => {
@@ -295,11 +351,20 @@ function App() {
    * Handle save/update gem button click
    */
   const handleSaveGem = async (filename: string) => {
+    console.log('[SaveGem] called for filename:', filename);
     const recordingState = recordingStates[filename];
-    if (!recordingState?.transcript) return;
-    
+    if (!recordingState?.transcript) {
+      console.warn('[SaveGem] SKIPPED: no transcript for', filename, 'recordingState:', recordingState);
+      return;
+    }
+    console.log('[SaveGem] transcript found, len:', recordingState.transcript.transcript.length, 'lang:', recordingState.transcript.language);
+
     const recording = state.recordings.find(r => r.filename === filename);
-    if (!recording) return;
+    if (!recording) {
+      console.warn('[SaveGem] SKIPPED: recording not found in state.recordings for', filename);
+      return;
+    }
+    console.log('[SaveGem] recording found, created_at:', recording.created_at);
     
     // Update state to show loading
     setRecordingStates(prev => ({
@@ -313,12 +378,33 @@ function App() {
     }));
     
     try {
+      // Prepare Co-Pilot data if available (Requirement 10.1, 10.2)
+      let copilotData = null;
+      if (copilotState && copilotState.cycle_metadata.cycle_number > 0) {
+        copilotData = {
+          summary: copilotState.running_summary,
+          key_points: copilotState.key_points,
+          decisions: copilotState.decisions,
+          action_items: copilotState.action_items,
+          open_questions: copilotState.open_questions,
+          key_concepts: copilotState.key_concepts.map(c => ({
+            term: c.term,
+            context: c.context
+          })),
+          total_cycles: copilotState.cycle_metadata.cycle_number,
+          total_audio_analyzed_seconds: copilotState.cycle_metadata.total_audio_seconds
+        };
+      }
+      
+      console.log('[SaveGem] invoking save_recording_gem:', { filename, transcriptLen: recordingState.transcript.transcript.length, language: recordingState.transcript.language, createdAt: recording.created_at, hasCopilotData: !!copilotData });
       await invoke<Gem>('save_recording_gem', {
         filename,
         transcript: recordingState.transcript.transcript,
         language: recordingState.transcript.language,
         createdAt: recording.created_at,
+        copilotData,
       });
+      console.log('[SaveGem] SUCCESS for', filename);
       
       setRecordingStates(prev => ({
         ...prev,
@@ -429,6 +515,49 @@ function App() {
   };
 
   /**
+   * Handle Co-Pilot toggle (Requirement 9.3, 9.4)
+   */
+  const handleCopilotToggle = async () => {
+    if (copilotEnabled) {
+      // Stop Co-Pilot
+      try {
+        const finalState = await invoke<CoPilotState>('stop_copilot');
+        setCopilotState(finalState);
+        setCopilotEnabled(false);
+        setCopilotStatus('stopped');
+        setCopilotError(null);
+      } catch (error) {
+        console.error('[App] Failed to stop Co-Pilot:', error);
+        setToastError(`Failed to stop Co-Pilot: ${error}`);
+      }
+    } else {
+      // Start Co-Pilot
+      try {
+        setCopilotStatus('starting');
+        await invoke('start_copilot');
+        setCopilotEnabled(true);
+        setCopilotError(null);
+      } catch (error) {
+        console.error('[App] Failed to start Co-Pilot:', error);
+        setCopilotStatus('stopped');
+        setToastError(`Failed to start Co-Pilot: ${error}`);
+      }
+    }
+  };
+
+  /**
+   * Handle dismissing a Co-Pilot suggested question (Requirement 8.5)
+   */
+  const handleDismissCopilotQuestion = async (index: number) => {
+    try {
+      await invoke('dismiss_copilot_question', { index });
+      // State will be updated via copilot-updated event
+    } catch (error) {
+      console.error('[App] Failed to dismiss question:', error);
+    }
+  };
+
+  /**
    * Format time in MM:SS format
    * Requirement 4.2: Display duration in MM:SS format
    */
@@ -496,6 +625,20 @@ function App() {
                   <span className="spinner"></span>
                   Processing...
                 </button>
+              )}
+              
+              {/* Co-Pilot Toggle (Requirement 9.1, 9.2, 9.5, 9.6) */}
+              {state.recordingState === "recording" && aiAvailable && (
+                <div className="copilot-toggle">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={copilotEnabled}
+                      onChange={handleCopilotToggle}
+                    />
+                    <span className="toggle-label">Enable Co-Pilot</span>
+                  </label>
+                </div>
               )}
               
               {/* Inline error for concurrent recording attempts */}
@@ -643,6 +786,11 @@ function App() {
         aiAvailable={aiAvailable}
         recordings={state.recordings}
         currentRecording={state.currentRecording}
+        copilotEnabled={copilotEnabled}
+        copilotStatus={copilotStatus}
+        copilotState={copilotState}
+        copilotError={copilotError}
+        onDismissCopilotQuestion={handleDismissCopilotQuestion}
         style={{ width: rightPanelWidth }}
       />
 

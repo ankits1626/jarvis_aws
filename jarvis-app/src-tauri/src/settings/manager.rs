@@ -10,6 +10,8 @@ pub struct Settings {
     pub browser: BrowserSettings,
     #[serde(default)]
     pub intelligence: IntelligenceSettings,
+    #[serde(default)]
+    pub copilot: CoPilotSettings,
 }
 
 /// Transcription-specific settings
@@ -44,6 +46,19 @@ pub struct IntelligenceSettings {
     pub python_path: String,    // "python3" or absolute path
 }
 
+/// Co-Pilot agent settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoPilotSettings {
+    #[serde(default = "default_copilot_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_cycle_interval")]
+    pub cycle_interval: u64,
+    #[serde(default = "default_audio_overlap")]
+    pub audio_overlap: u64,
+    #[serde(default = "default_agent_logging")]
+    pub agent_logging: bool,
+}
+
 fn default_engine() -> String {
     "whisper-rs".to_string()
 }
@@ -58,6 +73,22 @@ fn default_mlx_omni_model() -> String {
 
 fn default_window_duration() -> f32 {
     3.0
+}
+
+fn default_copilot_enabled() -> bool {
+    false
+}
+
+fn default_cycle_interval() -> u64 {
+    60
+}
+
+fn default_audio_overlap() -> u64 {
+    5
+}
+
+fn default_agent_logging() -> bool {
+    true
 }
 
 impl Default for TranscriptionSettings {
@@ -94,12 +125,24 @@ impl Default for IntelligenceSettings {
     }
 }
 
+impl Default for CoPilotSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_copilot_enabled(),
+            cycle_interval: default_cycle_interval(),
+            audio_overlap: default_audio_overlap(),
+            agent_logging: default_agent_logging(),
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
             transcription: TranscriptionSettings::default(),
             browser: BrowserSettings::default(),
             intelligence: IntelligenceSettings::default(),
+            copilot: CoPilotSettings::default(),
         }
     }
 }
@@ -264,6 +307,29 @@ impl SettingsManager {
         // Validate python_path is non-empty
         if settings.intelligence.python_path.trim().is_empty() {
             return Err("Intelligence python_path cannot be empty".to_string());
+        }
+        
+        // Validate copilot settings
+        if settings.copilot.cycle_interval < 30 || settings.copilot.cycle_interval > 120 {
+            return Err(format!(
+                "Co-Pilot cycle_interval must be between 30 and 120 seconds, got {}",
+                settings.copilot.cycle_interval
+            ));
+        }
+        
+        if settings.copilot.audio_overlap > 15 {
+            return Err(format!(
+                "Co-Pilot audio_overlap must be between 0 and 15 seconds, got {}",
+                settings.copilot.audio_overlap
+            ));
+        }
+        
+        if settings.copilot.audio_overlap >= settings.copilot.cycle_interval {
+            return Err(format!(
+                "Co-Pilot audio_overlap ({}) must be less than cycle_interval ({})",
+                settings.copilot.audio_overlap,
+                settings.copilot.cycle_interval
+            ));
         }
         
         Ok(())
