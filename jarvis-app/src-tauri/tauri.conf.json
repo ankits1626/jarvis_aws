@@ -37,6 +37,9 @@
       "binaries/JarvisListen",
       "binaries/IntelligenceKit"
     ],
+    "resources": [
+      "sidecars/"
+    ],
     "macOS": {
       "infoPlist": "Info.plist",
       "frameworks": ["libs/libvosk.dylib"]
