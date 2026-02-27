@@ -1,0 +1,15 @@
+Phase 1: Backend Foundation - Fix the path extraction bug (tasks 1.1-1.8)
+
+Phase 2: Backend Core - Implement transcription flow and command (tasks 2.1-3.14)
+
+Phase 3: Backend Testing - Unit and property tests for backend (tasks 4.1-5.5)
+
+Phase 4: Frontend Implementation - Build UI components (tasks 6.1-7.4)
+
+Phase 5: Frontend Testing - Unit and property tests for frontend (tasks 8.1-9.7)
+
+Phase 6: Integration & Manual Testing - End-to-end validation (tasks 10.1-10.8)
+
+Phase 7: Performance & Error Recovery - Performance testing and edge cases (tasks 11.1-11.7)
+
+This structure allows you to work through the feature incrementally, completing backend work before frontend, and ensuring each layer is tested before moving to the next phase.

@@ -533,6 +533,45 @@ export interface GemPreview {
 }
 
 /**
+ * Transcript types
+ * 
+ * These types define the structure for recording transcription results
+ */
+
+/** Transcript result matching Rust TranscriptResult struct */
+export interface TranscriptResult {
+  /** Detected language code (e.g., "en", "es", "zh") */
+  language: string;
+  
+  /** Full transcript text */
+  transcript: string;
+}
+
+/** Recording transcription state for UI management */
+export interface RecordingTranscriptionState {
+  /** Whether this recording is currently being transcribed */
+  transcribing: boolean;
+  
+  /** Transcript result if transcription completed successfully */
+  transcript?: TranscriptResult;
+  
+  /** Error message if transcription failed */
+  transcriptError?: string;
+  
+  /** Whether this recording has an associated gem */
+  hasGem: boolean;
+  
+  /** Whether gem is currently being saved */
+  savingGem: boolean;
+  
+  /** Whether gem was successfully saved (for success indicator) */
+  gemSaved: boolean;
+  
+  /** Error message if gem save failed */
+  gemError?: string;
+}
+
+/**
  * IntelligenceKit types
  * 
  * These types define the structure for AI enrichment availability and status

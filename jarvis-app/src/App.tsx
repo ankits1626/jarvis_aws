@@ -10,7 +10,7 @@ import { Settings } from "./components/Settings";
 import { YouTubeSection } from "./components/YouTubeSection";
 import { BrowserTool } from "./components/BrowserTool";
 import { GemsPanel } from "./components/GemsPanel";
-import type { YouTubeDetectedEvent } from "./state/types";
+import type { YouTubeDetectedEvent, TranscriptResult, RecordingTranscriptionState, GemPreview, AvailabilityResult, Gem } from "./state/types";
 import "./App.css";
 
 /**
@@ -49,6 +49,10 @@ function App() {
   const [showBrowserTool, setShowBrowserTool] = useState(false);
   const [showGems, setShowGems] = useState(false);
   const [toastError, setToastError] = useState<string | null>(null);
+  
+  // Recording transcription state
+  const [recordingStates, setRecordingStates] = useState<Record<string, RecordingTranscriptionState>>({});
+  const [aiAvailable, setAiAvailable] = useState<boolean>(false);
 
   // Load recordings on mount (Requirement 1.2)
   useEffect(() => {
@@ -59,6 +63,46 @@ function App() {
     };
     loadRecordings();
   }, [refreshRecordings]);
+  
+  // Check AI availability and gem status for all recordings on mount
+  // Uses recordings.length to avoid re-running when recording objects change (e.g., selection)
+  // This prevents resetting transcription/gem states during user interactions
+  useEffect(() => {
+    const checkAvailabilityAndGems = async () => {
+      try {
+        // Check AI availability
+        const availability = await invoke<AvailabilityResult>('check_intel_availability');
+        setAiAvailable(availability.available);
+
+        // Batch check gem status for all recordings
+        if (state.recordings.length > 0) {
+          const filenames = state.recordings.map(r => r.filename);
+          const gemStatusMap = await invoke<Record<string, GemPreview>>('check_recording_gems_batch', { filenames });
+
+          // Initialize recording states, preserving any existing state (e.g., ongoing transcription)
+          setRecordingStates(prev => {
+            const newStates: Record<string, RecordingTranscriptionState> = {};
+            state.recordings.forEach(recording => {
+              newStates[recording.filename] = prev[recording.filename] || {
+                transcribing: false,
+                hasGem: recording.filename in gemStatusMap,
+                savingGem: false,
+                gemSaved: false,
+              };
+            });
+            return newStates;
+          });
+        }
+      } catch (error) {
+        console.error('Failed to check availability or gem status:', error);
+      }
+    };
+
+    if (!isLoadingRecordings && state.recordings.length > 0) {
+      checkAvailabilityAndGems();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.recordings.length, isLoadingRecordings]);
 
   // Close hamburger menu when clicking outside
   useEffect(() => {
@@ -209,6 +253,113 @@ function App() {
   const handleRetryRecording = async () => {
     await retryRecording();
   };
+  
+  /**
+   * Handle transcribe button click
+   */
+  const handleTranscribeRecording = async (filename: string) => {
+    // Update state to show loading
+    setRecordingStates(prev => ({
+      ...prev,
+      [filename]: {
+        ...prev[filename],
+        transcribing: true,
+        transcriptError: undefined,
+        gemSaved: false,
+      }
+    }));
+    
+    try {
+      const result = await invoke<TranscriptResult>('transcribe_recording', { filename });
+      
+      // Check if gem exists for this recording
+      const gemPreview = await invoke<GemPreview | null>('check_recording_gem', { filename });
+      
+      setRecordingStates(prev => ({
+        ...prev,
+        [filename]: {
+          ...prev[filename],
+          transcribing: false,
+          transcript: result,
+          hasGem: gemPreview !== null,
+        }
+      }));
+    } catch (error) {
+      console.error('Transcription failed:', error);
+      setRecordingStates(prev => ({
+        ...prev,
+        [filename]: {
+          ...prev[filename],
+          transcribing: false,
+          transcriptError: String(error),
+        }
+      }));
+    }
+  };
+  
+  /**
+   * Handle save/update gem button click
+   */
+  const handleSaveGem = async (filename: string) => {
+    const recordingState = recordingStates[filename];
+    if (!recordingState?.transcript) return;
+    
+    const recording = state.recordings.find(r => r.filename === filename);
+    if (!recording) return;
+    
+    // Update state to show loading
+    setRecordingStates(prev => ({
+      ...prev,
+      [filename]: {
+        ...prev[filename],
+        savingGem: true,
+        gemError: undefined,
+        gemSaved: false,
+      }
+    }));
+    
+    try {
+      await invoke<Gem>('save_recording_gem', {
+        filename,
+        transcript: recordingState.transcript.transcript,
+        language: recordingState.transcript.language,
+        createdAt: recording.created_at,
+      });
+      
+      setRecordingStates(prev => ({
+        ...prev,
+        [filename]: {
+          ...prev[filename],
+          savingGem: false,
+          hasGem: true,
+          gemSaved: true,
+        }
+      }));
+      
+      // Clear transcript and success indicator after 3 seconds
+      setTimeout(() => {
+        setRecordingStates(prev => ({
+          ...prev,
+          [filename]: {
+            ...prev[filename],
+            gemSaved: false,
+            transcript: undefined,
+            transcriptError: undefined,
+          }
+        }));
+      }, 3000);
+    } catch (error) {
+      console.error('Failed to save gem:', error);
+      setRecordingStates(prev => ({
+        ...prev,
+        [filename]: {
+          ...prev[filename],
+          savingGem: false,
+          gemError: String(error),
+        }
+      }));
+    }
+  };
 
   /**
    * Handle opening YouTube section
@@ -347,34 +498,106 @@ function App() {
           <div className="recordings-section">
             <h2>Recordings ({state.recordings.length})</h2>
             <div className="recordings-list">
-              {state.recordings.map((recording) => (
-                <div
-                  key={recording.filename}
-                  className={`recording-item ${
-                    state.selectedRecording === recording.filename ? "selected" : ""
-                  }`}
-                >
-                  <div
-                    className="recording-info"
-                    onClick={() => handleSelectRecording(recording.filename)}
-                  >
-                    <div className="recording-name">{recording.filename}</div>
-                    <div className="recording-meta">
-                      {formatDate(recording.created_at)} • {formatTime(Math.floor(recording.duration_seconds))} • {formatFileSize(recording.size_bytes)}
+              {state.recordings.map((recording) => {
+                const recordingState = recordingStates[recording.filename] || {
+                  transcribing: false,
+                  hasGem: false,
+                  savingGem: false,
+                  gemSaved: false,
+                };
+                
+                return (
+                  <div key={recording.filename} className="recording-item-container">
+                    <div
+                      className={`recording-item ${
+                        state.selectedRecording === recording.filename ? "selected" : ""
+                      }`}
+                    >
+                      <div
+                        className="recording-info"
+                        onClick={() => handleSelectRecording(recording.filename)}
+                      >
+                        <div className="recording-name">
+                          {recording.filename}
+                          {recordingState.hasGem && <span className="gem-indicator" title="Has gem">💎</span>}
+                        </div>
+                        <div className="recording-meta">
+                          {formatDate(recording.created_at)} • {formatTime(Math.floor(recording.duration_seconds))} • {formatFileSize(recording.size_bytes)}
+                        </div>
+                      </div>
+                      <div className="recording-actions">
+                        {aiAvailable && (
+                          <button
+                            className="transcribe-button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleTranscribeRecording(recording.filename);
+                            }}
+                            disabled={recordingState.transcribing}
+                            title="Transcribe recording"
+                          >
+                            {recordingState.transcribing ? "⏳" : "📝"}
+                          </button>
+                        )}
+                        <button
+                          className="delete-button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteRecording(recording.filename);
+                          }}
+                          title="Delete recording"
+                        >
+                          🗑️
+                        </button>
+                      </div>
                     </div>
+                    
+                    {/* Transcript display */}
+                    {recordingState.transcript && (
+                      <div className="transcript-container">
+                        <div className="transcript-header">
+                          <span className="transcript-label">Transcript ({recordingState.transcript.language})</span>
+                        </div>
+                        <div className="transcript-text">
+                          {recordingState.transcript.transcript}
+                        </div>
+                        
+                        {/* Save/Update Gem button */}
+                        <div className="gem-actions">
+                          <button
+                            className="save-gem-button"
+                            onClick={() => handleSaveGem(recording.filename)}
+                            disabled={recordingState.savingGem}
+                          >
+                            {recordingState.savingGem ? (
+                              <>
+                                <span className="spinner"></span>
+                                Saving...
+                              </>
+                            ) : recordingState.gemSaved ? (
+                              "✓ Saved!"
+                            ) : recordingState.hasGem ? (
+                              "Update Gem"
+                            ) : (
+                              "Save as Gem"
+                            )}
+                          </button>
+                          {recordingState.gemError && (
+                            <div className="gem-error">{recordingState.gemError}</div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Transcription error */}
+                    {recordingState.transcriptError && (
+                      <div className="transcript-error">
+                        Error: {recordingState.transcriptError}
+                      </div>
+                    )}
                   </div>
-                  <button
-                    className="delete-button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDeleteRecording(recording.filename);
-                    }}
-                    title="Delete recording"
-                  >
-                    🗑️
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         ) : (

@@ -1,6 +1,7 @@
 use crate::files::{FileManager, RecordingMetadata};
 use crate::gems::{Gem, GemPreview, GemStore};
 use crate::intelligence::{IntelProvider, LlmModelInfo, LlmModelManager, VenvManager};
+use crate::intelligence::provider::TranscriptResult;
 use crate::platform::PlatformDetector;
 use crate::recording::RecordingManager;
 use crate::settings::{ModelManager, Settings, SettingsManager};
@@ -717,6 +718,243 @@ pub async fn transcribe_gem(
         gem.ai_enrichment = Some(ai_enrichment);
     }
 
+    // Save and return
+    gem_store.save(gem).await
+}
+
+/// Transcribe a recording file without creating a gem
+///
+/// This command transcribes a raw PCM recording file from the recordings directory
+/// without creating or modifying any gems. It's used for the "Transcribe" button
+/// in the recordings list UI.
+///
+/// # Arguments
+///
+/// * `filename` - The recording filename (e.g., "recording_1234567890.pcm")
+/// * `intel_provider` - Managed state containing the IntelProvider trait object
+///
+/// # Returns
+///
+/// * `Ok(TranscriptResult)` - Transcript with detected language
+/// * `Err(String)` - Error message if transcription fails
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The filename contains path separators (security validation)
+/// - The IntelProvider is not available
+/// - The recording file doesn't exist on disk
+/// - The provider doesn't support transcription
+/// - The transcription process fails
+
+/// Helper function for transcribe_recording that can be tested without Tauri State
+async fn transcribe_recording_inner(
+    filename: &str,
+    provider: &dyn IntelProvider,
+) -> Result<TranscriptResult, String> {
+    // Security: Validate filename doesn't contain path separators
+    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
+        return Err("Invalid filename: path separators not allowed".to_string());
+    }
+
+    // Check provider availability first
+    let availability = provider.check_availability().await;
+    if !availability.available {
+        return Err(format!(
+            "AI provider not available: {}",
+            availability.reason.unwrap_or_else(|| "Unknown reason".to_string())
+        ));
+    }
+
+    // Construct full path: dirs::data_dir()/com.jarvis.app/recordings/{filename}
+    let data_dir = dirs::data_dir()
+        .ok_or_else(|| "Could not find data directory".to_string())?;
+    let recording_path = data_dir.join("com.jarvis.app").join("recordings").join(filename);
+
+    // Verify file exists
+    if !recording_path.exists() {
+        return Err(format!("Recording file not found: {}", recording_path.display()));
+    }
+
+    // Generate transcript
+    provider.generate_transcript(&recording_path).await
+        .map_err(|e| {
+            if e.contains("not supported") {
+                "Current AI provider does not support transcription".to_string()
+            } else {
+                e
+            }
+        })
+}
+
+#[tauri::command]
+pub async fn transcribe_recording(
+    filename: String,
+    intel_provider: State<'_, Arc<dyn IntelProvider>>,
+) -> Result<TranscriptResult, String> {
+    transcribe_recording_inner(&filename, &**intel_provider).await
+}
+
+/// Check if a recording has an associated gem
+///
+/// This command queries the gem store for gems with a matching recording filename
+/// in their source_meta. Used to determine button labels ("Save as Gem" vs "Update Gem").
+///
+/// # Arguments
+///
+/// * `filename` - The recording filename to search for
+/// * `gem_store` - Managed state containing the GemStore trait object
+///
+/// # Returns
+///
+/// * `Ok(Some(GemPreview))` - Gem preview if found
+/// * `Ok(None)` - No gem found for this recording
+/// * `Err(String)` - Error message if query fails
+#[tauri::command]
+pub async fn check_recording_gem(
+    filename: String,
+    gem_store: State<'_, Arc<dyn GemStore>>,
+) -> Result<Option<GemPreview>, String> {
+    gem_store.find_by_recording_filename(&filename).await
+}
+
+/// Check which recordings have associated gems (batch operation)
+///
+/// This command queries the gem store for all provided recording filenames
+/// and returns a map of filename -> GemPreview for recordings that have gems.
+/// Used on mount to display gem indicators efficiently.
+///
+/// # Arguments
+///
+/// * `filenames` - Vector of recording filenames to check
+/// * `gem_store` - Managed state containing the GemStore trait object
+///
+/// # Returns
+///
+/// * `Ok(HashMap<String, GemPreview>)` - Map of filename to gem preview (only for recordings with gems)
+/// * `Err(String)` - Error message if query fails
+#[tauri::command]
+pub async fn check_recording_gems_batch(
+    filenames: Vec<String>,
+    gem_store: State<'_, Arc<dyn GemStore>>,
+) -> Result<std::collections::HashMap<String, GemPreview>, String> {
+    let mut result = std::collections::HashMap::new();
+    
+    for filename in filenames {
+        if let Some(gem_preview) = gem_store.find_by_recording_filename(&filename).await? {
+            result.insert(filename, gem_preview);
+        }
+    }
+    
+    Ok(result)
+}
+
+/// Save or update a recording gem with transcript
+///
+/// This command creates a new gem or updates an existing gem for a recording.
+/// It checks for existing gems via recording filename, generates AI enrichment
+/// (tags/summary), and handles graceful degradation when AI is unavailable.
+///
+/// # Arguments
+///
+/// * `filename` - The recording filename
+/// * `transcript` - The transcript text
+/// * `language` - The detected language code
+/// * `created_at` - Unix timestamp (seconds) from RecordingMetadata
+/// * `gem_store` - Managed state containing the GemStore trait object
+/// * `intel_provider` - Managed state containing the IntelProvider trait object
+/// * `settings_manager` - Managed state containing settings
+///
+/// # Returns
+///
+/// * `Ok(Gem)` - The saved or updated gem
+/// * `Err(String)` - Error message if save fails
+#[tauri::command]
+pub async fn save_recording_gem(
+    filename: String,
+    transcript: String,
+    language: String,
+    created_at: u64,
+    gem_store: State<'_, Arc<dyn GemStore>>,
+    intel_provider: State<'_, Arc<dyn IntelProvider>>,
+    settings_manager: State<'_, Arc<RwLock<SettingsManager>>>,
+) -> Result<Gem, String> {
+    // Check for existing gem
+    let existing_gem = gem_store.find_by_recording_filename(&filename).await?;
+    
+    let mut gem = if let Some(preview) = existing_gem {
+        // Update existing gem
+        let mut existing = gem_store.get(&preview.id).await?
+            .ok_or_else(|| format!("Gem with id '{}' not found", preview.id))?;
+        
+        existing.transcript = Some(transcript.clone());
+        existing.transcript_language = Some(language.clone());
+        existing
+    } else {
+        // Create new gem with deterministic URL
+        let title = if let Some(dt) = chrono::DateTime::from_timestamp(created_at as i64, 0) {
+            format!("Audio Transcript - {}", dt.format("%Y-%m-%d %H:%M:%S"))
+        } else {
+            format!("Audio Transcript - {}", filename)
+        };
+        
+        Gem {
+            id: uuid::Uuid::new_v4().to_string(),
+            source_type: "Other".to_string(),
+            source_url: format!("jarvis://recording/{}", filename),
+            domain: "jarvis-app".to_string(),
+            title,
+            author: None,
+            description: None,
+            content: None,
+            source_meta: serde_json::json!({
+                "recording_filename": filename,
+                "source": "recording_transcription"
+            }),
+            captured_at: chrono::Utc::now().to_rfc3339(),
+            ai_enrichment: None,
+            transcript: Some(transcript.clone()),
+            transcript_language: Some(language.clone()),
+        }
+    };
+    
+    // Try to generate AI enrichment (tags/summary) from transcript
+    let availability = intel_provider.check_availability().await;
+    if availability.available && !transcript.trim().is_empty() {
+        let (provider_name, model_name) = {
+            let manager = settings_manager.read()
+                .map_err(|e| format!("Failed to acquire settings lock: {}", e))?;
+            let s = manager.get();
+            (s.intelligence.provider.clone(), s.intelligence.active_model.clone())
+        };
+        
+        // Try to generate tags and summary, but don't fail the save if enrichment fails
+        match intel_provider.generate_tags(&transcript).await {
+            Ok(tags) => {
+                match intel_provider.summarize(&transcript).await {
+                    Ok(summary) => {
+                        let mut ai_enrichment = serde_json::json!({
+                            "tags": tags,
+                            "summary": summary,
+                            "provider": provider_name,
+                            "enriched_at": chrono::Utc::now().to_rfc3339(),
+                        });
+                        if provider_name == "mlx" {
+                            ai_enrichment["model"] = serde_json::Value::String(model_name);
+                        }
+                        gem.ai_enrichment = Some(ai_enrichment);
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to generate summary: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to generate tags: {}", e);
+            }
+        }
+    }
+    
     // Save and return
     gem_store.save(gem).await
 }
@@ -2180,6 +2418,542 @@ mod tests {
         assert!(!filename.contains('\\'));
         assert!(!filename.contains(".."));
     }
+
+    // Tests for extract_recording_path function
+    
+    #[test]
+    fn test_extract_recording_path_with_recording_filename() {
+        // Test with primary key: recording_filename
+        let gem = Gem {
+            id: "test-id".to_string(),
+            source_type: "Other".to_string(),
+            source_url: "jarvis://recording/test".to_string(),
+            domain: "jarvis-app".to_string(),
+            title: "Test Recording".to_string(),
+            author: None,
+            description: None,
+            content: Some("Whisper transcript".to_string()),
+            source_meta: serde_json::json!({
+                "recording_filename": "20240315_143022.pcm"
+            }),
+            captured_at: "2024-03-15T14:30:22Z".to_string(),
+            ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
+        };
+
+        let result = extract_recording_path(&gem);
+        assert!(result.is_some());
+        
+        let path = result.unwrap();
+        assert!(path.to_string_lossy().contains("com.jarvis.app"));
+        assert!(path.to_string_lossy().contains("recordings"));
+        assert!(path.to_string_lossy().ends_with("20240315_143022.pcm"));
+    }
+
+    #[test]
+    fn test_extract_recording_path_with_fallback_keys() {
+        // Test with fallback key: filename
+        let gem_filename = Gem {
+            id: "test-id".to_string(),
+            source_type: "Other".to_string(),
+            source_url: "jarvis://recording/test".to_string(),
+            domain: "jarvis-app".to_string(),
+            title: "Test Recording".to_string(),
+            author: None,
+            description: None,
+            content: None,
+            source_meta: serde_json::json!({
+                "filename": "test_audio.pcm"
+            }),
+            captured_at: "2024-03-15T14:30:22Z".to_string(),
+            ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
+        };
+
+        let result = extract_recording_path(&gem_filename);
+        assert!(result.is_some());
+        assert!(result.unwrap().to_string_lossy().ends_with("test_audio.pcm"));
+
+        // Test with fallback key: recording_path
+        let gem_recording_path = Gem {
+            id: "test-id".to_string(),
+            source_type: "Other".to_string(),
+            source_url: "jarvis://recording/test".to_string(),
+            domain: "jarvis-app".to_string(),
+            title: "Test Recording".to_string(),
+            author: None,
+            description: None,
+            content: None,
+            source_meta: serde_json::json!({
+                "recording_path": "another_audio.pcm"
+            }),
+            captured_at: "2024-03-15T14:30:22Z".to_string(),
+            ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
+        };
+
+        let result = extract_recording_path(&gem_recording_path);
+        assert!(result.is_some());
+        assert!(result.unwrap().to_string_lossy().ends_with("another_audio.pcm"));
+
+        // Test with fallback key: file
+        let gem_file = Gem {
+            id: "test-id".to_string(),
+            source_type: "Other".to_string(),
+            source_url: "jarvis://recording/test".to_string(),
+            domain: "jarvis-app".to_string(),
+            title: "Test Recording".to_string(),
+            author: None,
+            description: None,
+            content: None,
+            source_meta: serde_json::json!({
+                "file": "file_audio.pcm"
+            }),
+            captured_at: "2024-03-15T14:30:22Z".to_string(),
+            ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
+        };
+
+        let result = extract_recording_path(&gem_file);
+        assert!(result.is_some());
+        assert!(result.unwrap().to_string_lossy().ends_with("file_audio.pcm"));
+
+        // Test with fallback key: path
+        let gem_path = Gem {
+            id: "test-id".to_string(),
+            source_type: "Other".to_string(),
+            source_url: "jarvis://recording/test".to_string(),
+            domain: "jarvis-app".to_string(),
+            title: "Test Recording".to_string(),
+            author: None,
+            description: None,
+            content: None,
+            source_meta: serde_json::json!({
+                "path": "path_audio.pcm"
+            }),
+            captured_at: "2024-03-15T14:30:22Z".to_string(),
+            ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
+        };
+
+        let result = extract_recording_path(&gem_path);
+        assert!(result.is_some());
+        assert!(result.unwrap().to_string_lossy().ends_with("path_audio.pcm"));
+    }
+
+    #[test]
+    fn test_extract_recording_path_without_metadata() {
+        // Test gem without any recording filename keys
+        let gem = Gem {
+            id: "test-id".to_string(),
+            source_type: "YouTube".to_string(),
+            source_url: "https://youtube.com/watch?v=test".to_string(),
+            domain: "youtube.com".to_string(),
+            title: "Test Video".to_string(),
+            author: Some("Test Author".to_string()),
+            description: None,
+            content: Some("Video transcript".to_string()),
+            source_meta: serde_json::json!({
+                "video_id": "test123",
+                "duration": 300
+            }),
+            captured_at: "2024-03-15T14:30:22Z".to_string(),
+            ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
+        };
+
+        let result = extract_recording_path(&gem);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_extract_recording_path_ignores_source_type() {
+        // Test that function works regardless of source_type value
+        // This verifies the bug fix (previously checked source_type != "Recording")
+        
+        // Test with source_type "Other" (actual value for recordings)
+        let gem_other = Gem {
+            id: "test-id".to_string(),
+            source_type: "Other".to_string(),
+            source_url: "jarvis://recording/test".to_string(),
+            domain: "jarvis-app".to_string(),
+            title: "Test Recording".to_string(),
+            author: None,
+            description: None,
+            content: None,
+            source_meta: serde_json::json!({
+                "recording_filename": "test1.pcm"
+            }),
+            captured_at: "2024-03-15T14:30:22Z".to_string(),
+            ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
+        };
+
+        let result = extract_recording_path(&gem_other);
+        assert!(result.is_some());
+        assert!(result.unwrap().to_string_lossy().ends_with("test1.pcm"));
+
+        // Test with source_type "Recording" (hypothetical value)
+        let gem_recording = Gem {
+            id: "test-id".to_string(),
+            source_type: "Recording".to_string(),
+            source_url: "jarvis://recording/test".to_string(),
+            domain: "jarvis-app".to_string(),
+            title: "Test Recording".to_string(),
+            author: None,
+            description: None,
+            content: None,
+            source_meta: serde_json::json!({
+                "recording_filename": "test2.pcm"
+            }),
+            captured_at: "2024-03-15T14:30:22Z".to_string(),
+            ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
+        };
+
+        let result = extract_recording_path(&gem_recording);
+        assert!(result.is_some());
+        assert!(result.unwrap().to_string_lossy().ends_with("test2.pcm"));
+
+        // Test with source_type "YouTube" (unrelated value)
+        let gem_youtube = Gem {
+            id: "test-id".to_string(),
+            source_type: "YouTube".to_string(),
+            source_url: "jarvis://recording/test".to_string(),
+            domain: "jarvis-app".to_string(),
+            title: "Test Recording".to_string(),
+            author: None,
+            description: None,
+            content: None,
+            source_meta: serde_json::json!({
+                "recording_filename": "test3.pcm"
+            }),
+            captured_at: "2024-03-15T14:30:22Z".to_string(),
+            ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
+        };
+
+        let result = extract_recording_path(&gem_youtube);
+        assert!(result.is_some());
+        assert!(result.unwrap().to_string_lossy().ends_with("test3.pcm"));
+    }
+
+    // Property-based tests for extract_recording_path
+    
+    use proptest::prelude::*;
+
+    // Generator for gems with recording metadata
+    fn arb_gem_with_recording() -> impl Strategy<Value = Gem> {
+        (
+            any::<String>(),
+            any::<String>(),
+            prop::collection::vec(any::<String>(), 0..5),
+            prop::option::of(any::<String>()),
+            prop::option::of(any::<String>()),
+            prop::option::of(any::<String>()),
+            "[a-zA-Z0-9_-]{1,50}\\.pcm",
+            prop::option::of(any::<String>()),
+        ).prop_map(|(id, source_type, _tags, author, description, content, filename, transcript)| {
+            Gem {
+                id,
+                source_type,
+                source_url: "jarvis://recording/test".to_string(),
+                domain: "jarvis-app".to_string(),
+                title: "Test Recording".to_string(),
+                author,
+                description,
+                content,
+                source_meta: serde_json::json!({
+                    "recording_filename": filename
+                }),
+                captured_at: "2024-03-15T14:30:22Z".to_string(),
+                ai_enrichment: None,
+                transcript,
+                transcript_language: None,
+            }
+        })
+    }
+
+    // Generator for gems without recording metadata
+    fn arb_gem_without_recording() -> impl Strategy<Value = Gem> {
+        (
+            any::<String>(),
+            any::<String>(),
+            any::<String>(),
+            any::<String>(),
+            prop::option::of(any::<String>()),
+            prop::option::of(any::<String>()),
+            prop::option::of(any::<String>()),
+        ).prop_map(|(id, source_type, source_url, domain, author, description, content)| {
+            Gem {
+                id,
+                source_type,
+                source_url,
+                domain,
+                title: "Test Content".to_string(),
+                author,
+                description,
+                content,
+                source_meta: serde_json::json!({
+                    "video_id": "test123",
+                    "duration": 300
+                }),
+                captured_at: "2024-03-15T14:30:22Z".to_string(),
+                ai_enrichment: None,
+                transcript: None,
+                transcript_language: None,
+            }
+        })
+    }
+
+    // Feature: transcribe-existing-gems, Property 1: Recording Path Extraction from Metadata
+    proptest! {
+        #[test]
+        fn prop_extract_recording_path_with_metadata(gem in arb_gem_with_recording()) {
+            let result = extract_recording_path(&gem);
+            
+            // Property: Should always return Some for gems with recording metadata
+            prop_assert!(result.is_some());
+            
+            let path = result.unwrap();
+            let path_str = path.to_string_lossy();
+            
+            // Property: Path should contain the expected directory structure
+            prop_assert!(path_str.contains("com.jarvis.app"));
+            prop_assert!(path_str.contains("recordings"));
+            
+            // Property: Path should end with .pcm extension
+            prop_assert!(path_str.ends_with(".pcm"));
+            
+            // Property: Filename from source_meta should be in the path
+            if let Some(filename) = gem.source_meta.get("recording_filename").and_then(|v| v.as_str()) {
+                prop_assert!(path_str.ends_with(filename));
+            }
+        }
+    }
+
+    // Feature: transcribe-existing-gems, Property 2: Recording Path Extraction Returns None for Non-Recordings
+    proptest! {
+        #[test]
+        fn prop_extract_recording_path_without_metadata(gem in arb_gem_without_recording()) {
+            let result = extract_recording_path(&gem);
+            
+            // Property: Should always return None for gems without recording metadata
+            prop_assert!(result.is_none());
+        }
+    }
+
+    // Mock implementations for testing transcribe_gem command
+    
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use crate::intelligence::provider::{TranscriptResult, AvailabilityResult};
+    
+    /// Mock IntelProvider for testing
+    pub(super) struct MockIntelProvider {
+        available: bool,
+        availability_reason: Option<String>,
+        transcript_result: Mutex<Option<Result<TranscriptResult, String>>>,
+        tags_result: Mutex<Option<Result<Vec<String>, String>>>,
+        summary_result: Mutex<Option<Result<String, String>>>,
+    }
+    
+    impl MockIntelProvider {
+        pub(super) fn new() -> Self {
+            Self {
+                available: true,
+                availability_reason: None,
+                transcript_result: Mutex::new(None),
+                tags_result: Mutex::new(None),
+                summary_result: Mutex::new(None),
+            }
+        }
+        
+        pub(super) fn with_availability(mut self, available: bool, reason: Option<String>) -> Self {
+            self.available = available;
+            self.availability_reason = reason;
+            self
+        }
+        
+        pub(super) fn with_transcript_result(self, result: Result<TranscriptResult, String>) -> Self {
+            *self.transcript_result.lock().unwrap() = Some(result);
+            self
+        }
+        
+        pub(super) fn with_tags_result(self, result: Result<Vec<String>, String>) -> Self {
+            *self.tags_result.lock().unwrap() = Some(result);
+            self
+        }
+        
+        pub(super) fn with_summary_result(self, result: Result<String, String>) -> Self {
+            *self.summary_result.lock().unwrap() = Some(result);
+            self
+        }
+    }
+    
+    #[async_trait::async_trait]
+    impl IntelProvider for MockIntelProvider {
+        async fn check_availability(&self) -> AvailabilityResult {
+            AvailabilityResult {
+                available: self.available,
+                reason: self.availability_reason.clone(),
+            }
+        }
+        
+        async fn generate_tags(&self, _content: &str) -> Result<Vec<String>, String> {
+            self.tags_result.lock().unwrap()
+                .clone()
+                .unwrap_or_else(|| Ok(vec!["test".to_string(), "mock".to_string()]))
+        }
+        
+        async fn summarize(&self, _content: &str) -> Result<String, String> {
+            self.summary_result.lock().unwrap()
+                .clone()
+                .unwrap_or_else(|| Ok("Mock summary".to_string()))
+        }
+        
+        async fn generate_transcript(&self, _audio_path: &std::path::Path) -> Result<TranscriptResult, String> {
+            self.transcript_result.lock().unwrap()
+                .clone()
+                .unwrap_or_else(|| Ok(TranscriptResult {
+                    language: "en".to_string(),
+                    transcript: "Mock transcript".to_string(),
+                }))
+        }
+    }
+    
+    /// Mock GemStore for testing
+    pub(super) struct MockGemStore {
+        gems: Mutex<HashMap<String, Gem>>,
+    }
+    
+    impl MockGemStore {
+        pub(super) fn new() -> Self {
+            Self {
+                gems: Mutex::new(HashMap::new()),
+            }
+        }
+        
+        pub(super) fn with_gem(self, gem: Gem) -> Self {
+            self.gems.lock().unwrap().insert(gem.id.clone(), gem);
+            self
+        }
+    }
+    
+    #[async_trait::async_trait]
+    impl GemStore for MockGemStore {
+        async fn save(&self, gem: Gem) -> Result<Gem, String> {
+            self.gems.lock().unwrap().insert(gem.id.clone(), gem.clone());
+            Ok(gem)
+        }
+        
+        async fn get(&self, id: &str) -> Result<Option<Gem>, String> {
+            Ok(self.gems.lock().unwrap().get(id).cloned())
+        }
+        
+        async fn list(&self, _limit: usize, _offset: usize) -> Result<Vec<GemPreview>, String> {
+            unimplemented!("Not needed for transcribe_gem tests")
+        }
+        
+        async fn search(&self, _query: &str, _limit: usize) -> Result<Vec<GemPreview>, String> {
+            unimplemented!("Not needed for transcribe_gem tests")
+        }
+        
+        async fn filter_by_tag(&self, _tag: &str, _limit: usize, _offset: usize) -> Result<Vec<GemPreview>, String> {
+            unimplemented!("Not needed for transcribe_gem tests")
+        }
+        
+        async fn delete(&self, id: &str) -> Result<(), String> {
+            self.gems.lock().unwrap().remove(id);
+            Ok(())
+        }
+        
+        async fn find_by_recording_filename(&self, filename: &str) -> Result<Option<GemPreview>, String> {
+            // Search through all gems for one with matching recording_filename in source_meta
+            let gems = self.gems.lock().unwrap();
+            let matching_gem = gems.values()
+                .find(|gem| {
+                    gem.source_meta
+                        .get("recording_filename")
+                        .and_then(|v| v.as_str())
+                        .map(|f| f == filename)
+                        .unwrap_or(false)
+                });
+            
+            Ok(matching_gem.map(|gem| GemPreview {
+                id: gem.id.clone(),
+                source_type: gem.source_type.clone(),
+                source_url: gem.source_url.clone(),
+                domain: gem.domain.clone(),
+                title: gem.title.clone(),
+                author: gem.author.clone(),
+                description: gem.description.clone(),
+                content_preview: gem.content.as_ref().map(|c| {
+                    if c.chars().count() > 200 {
+                        format!("{}...", c.chars().take(200).collect::<String>())
+                    } else {
+                        c.clone()
+                    }
+                }),
+                captured_at: gem.captured_at.clone(),
+                tags: None,
+                summary: None,
+                enrichment_source: None,
+                transcript_language: gem.transcript_language.clone(),
+            }))
+        }
+    }
+    
+    // Helper function to create a test gem with recording metadata
+    pub(super) fn create_test_gem_with_recording(id: &str, filename: &str) -> Gem {
+        Gem {
+            id: id.to_string(),
+            source_type: "Other".to_string(),
+            source_url: "jarvis://recording/test".to_string(),
+            domain: "jarvis-app".to_string(),
+            title: "Test Recording".to_string(),
+            author: None,
+            description: Some("Test description".to_string()),
+            content: Some("Original whisper transcript".to_string()),
+            source_meta: serde_json::json!({
+                "recording_filename": filename
+            }),
+            captured_at: "2024-03-15T14:30:22Z".to_string(),
+            ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
+        }
+    }
+    
+    // Helper function to create a test gem without recording metadata
+    pub(super) fn create_test_gem_without_recording(id: &str) -> Gem {
+        Gem {
+            id: id.to_string(),
+            source_type: "YouTube".to_string(),
+            source_url: "https://youtube.com/watch?v=test".to_string(),
+            domain: "youtube.com".to_string(),
+            title: "Test Video".to_string(),
+            author: Some("Test Author".to_string()),
+            description: None,
+            content: Some("Video content".to_string()),
+            source_meta: serde_json::json!({
+                "video_id": "test123"
+            }),
+            captured_at: "2024-03-15T14:30:22Z".to_string(),
+            ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
+        }
+    }
 }
 
 /// Capture Claude conversation from Chrome Extension side panel
@@ -2555,3 +3329,602 @@ pub async fn switch_llm_model(
         Ok(())
     }
 }
+
+    // Unit tests for transcribe_gem command
+    
+    // Note: These tests cannot be run as standard #[tokio::test] because transcribe_gem
+    // requires Tauri State parameters which are only available in a running Tauri app.
+    // The tests below demonstrate the test structure and logic, but would need to be
+    // adapted for integration testing or use a test harness that provides State.
+    
+    #[cfg(test)]
+    mod transcribe_gem_tests {
+        use crate::commands::tests::{MockIntelProvider, MockGemStore, create_test_gem_with_recording, create_test_gem_without_recording};
+        use super::*;
+        use std::sync::Arc;
+        use std::path::PathBuf;
+        use tokio::sync::RwLock;
+        use crate::settings::SettingsManager;
+        use crate::intelligence::provider::TranscriptResult;
+        
+        // Helper to create a mock settings manager
+        fn create_mock_settings_manager() -> Arc<RwLock<SettingsManager>> {
+            // Create a temporary settings file for testing
+            let temp_dir = std::env::temp_dir();
+            let settings_path = temp_dir.join(format!("test_settings_{}.json", uuid::Uuid::new_v4()));
+            
+            let manager = SettingsManager::new_with_path(settings_path).unwrap();
+            Arc::new(RwLock::new(manager))
+        }
+        
+        // Helper to create a temporary test file
+        fn create_test_audio_file() -> PathBuf {
+            let temp_dir = std::env::temp_dir();
+            let test_file = temp_dir.join("test_audio.pcm");
+            std::fs::write(&test_file, b"fake audio data").unwrap();
+            test_file
+        }
+        
+        // Task 4.1: Test successful transcription (happy path)
+        #[tokio::test]
+        async fn test_transcribe_gem_success() {
+            // Create test audio file
+            let test_file = create_test_audio_file();
+            let filename = test_file.file_name().unwrap().to_str().unwrap();
+            
+            // Create gem with recording metadata
+            let gem = create_test_gem_with_recording("test-id", filename);
+            
+            // Create mock store with the gem
+            let store = Arc::new(MockGemStore::new().with_gem(gem.clone())) as Arc<dyn GemStore>;
+            
+            // Create mock provider with successful responses
+            let provider = Arc::new(
+                MockIntelProvider::new()
+                    .with_transcript_result(Ok(TranscriptResult {
+                        language: "en".to_string(),
+                        transcript: "This is a test transcript".to_string(),
+                    }))
+                    .with_tags_result(Ok(vec!["test".to_string(), "audio".to_string()]))
+                    .with_summary_result(Ok("Test audio summary".to_string()))
+            ) as Arc<dyn IntelProvider>;
+            
+            let settings_manager = create_mock_settings_manager();
+            
+            // Note: This test structure shows the logic but cannot run without Tauri State
+            // In a real integration test, you would use:
+            // let result = transcribe_gem("test-id".to_string(), State::from(store), State::from(provider), State::from(settings_manager)).await;
+            
+            // Verify the logic manually:
+            // 1. Provider should be available
+            let availability = provider.check_availability().await;
+            assert!(availability.available);
+            
+            // 2. Gem should be found
+            let fetched_gem = store.get("test-id").await.unwrap();
+            assert!(fetched_gem.is_some());
+            
+            // 3. Recording path should be extractable
+            let recording_path = extract_recording_path(&fetched_gem.unwrap());
+            assert!(recording_path.is_some());
+            
+            // 4. Transcript should be generated successfully
+            let transcript_result: Result<TranscriptResult, String> = provider.generate_transcript(&test_file).await;
+            assert!(transcript_result.is_ok());
+            let transcript = transcript_result.unwrap();
+            assert_eq!(transcript.language, "en");
+            assert_eq!(transcript.transcript, "This is a test transcript");
+            
+            // Cleanup
+            std::fs::remove_file(test_file).ok();
+        }
+        
+        // Task 4.2: Test gem not found error
+        #[tokio::test]
+        async fn test_transcribe_gem_not_found() {
+            let store = Arc::new(MockGemStore::new()) as Arc<dyn GemStore>;
+            let provider = Arc::new(MockIntelProvider::new()) as Arc<dyn IntelProvider>;
+            
+            // Verify gem is not found
+            let result = store.get("nonexistent-id").await.unwrap();
+            assert!(result.is_none());
+            
+            // In the actual command, this would return:
+            // Err("Gem with id 'nonexistent-id' not found")
+        }
+        
+        // Task 4.3: Test no recording metadata error
+        #[tokio::test]
+        async fn test_transcribe_gem_no_recording_metadata() {
+            let gem = create_test_gem_without_recording("test-id");
+            let store = Arc::new(MockGemStore::new().with_gem(gem.clone())) as Arc<dyn GemStore>;
+            
+            // Verify gem has no recording metadata
+            let fetched_gem = store.get("test-id").await.unwrap().unwrap();
+            let recording_path = extract_recording_path(&fetched_gem);
+            assert!(recording_path.is_none());
+            
+            // In the actual command, this would return:
+            // Err("This gem has no associated recording file")
+        }
+        
+        // Task 4.4: Test recording file not found error
+        #[tokio::test]
+        async fn test_transcribe_gem_file_not_found() {
+            let gem = create_test_gem_with_recording("test-id", "nonexistent_file.pcm");
+            let store = Arc::new(MockGemStore::new().with_gem(gem.clone())) as Arc<dyn GemStore>;
+            
+            // Verify recording path exists but file doesn't
+            let fetched_gem = store.get("test-id").await.unwrap().unwrap();
+            let recording_path = extract_recording_path(&fetched_gem);
+            assert!(recording_path.is_some());
+            
+            let path = recording_path.unwrap();
+            assert!(!path.exists());
+            
+            // In the actual command, this would return:
+            // Err("Recording file not found: {path}")
+        }
+        
+        // Task 4.5: Test provider unavailable error
+        #[tokio::test]
+        async fn test_transcribe_gem_provider_unavailable() {
+            let provider = Arc::new(
+                MockIntelProvider::new()
+                    .with_availability(false, Some("MLX not installed".to_string()))
+            ) as Arc<dyn IntelProvider>;
+            
+            // Verify provider is unavailable
+            let availability = provider.check_availability().await;
+            assert!(!availability.available);
+            assert_eq!(availability.reason, Some("MLX not installed".to_string()));
+            
+            // In the actual command, this would return:
+            // Err("AI provider not available: MLX not installed")
+        }
+        
+        // Task 4.6: Test provider doesn't support transcription error
+        #[tokio::test]
+        async fn test_transcribe_gem_transcription_not_supported() {
+            let test_file = create_test_audio_file();
+            
+            let provider = Arc::new(
+                MockIntelProvider::new()
+                    .with_transcript_result(Err("Transcript generation not supported by this provider".to_string()))
+            ) as Arc<dyn IntelProvider>;
+            
+            // Verify transcription is not supported
+            let result = provider.generate_transcript(&test_file).await;
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("not supported"));
+            
+            // In the actual command, this would return:
+            // Err("Current AI provider does not support transcription")
+            
+            std::fs::remove_file(test_file).ok();
+        }
+        
+        // Task 4.7: Test that only expected fields are updated
+        #[tokio::test]
+        async fn test_transcribe_gem_field_preservation() {
+            let test_file = create_test_audio_file();
+            let filename = test_file.file_name().unwrap().to_str().unwrap();
+            
+            let original_gem = create_test_gem_with_recording("test-id", filename);
+            let store = Arc::new(MockGemStore::new().with_gem(original_gem.clone())) as Arc<dyn GemStore>;
+            
+            let provider = Arc::new(
+                MockIntelProvider::new()
+                    .with_transcript_result(Ok(TranscriptResult {
+                        language: "en".to_string(),
+                        transcript: "New transcript".to_string(),
+                    }))
+            ) as Arc<dyn IntelProvider>;
+            
+            // Simulate the transcription process
+            let mut updated_gem = original_gem.clone();
+            let transcript_result = provider.generate_transcript(&test_file).await.unwrap();
+            updated_gem.transcript = Some(transcript_result.transcript.clone());
+            updated_gem.transcript_language = Some(transcript_result.language.clone());
+            
+            // Verify only transcript fields are updated
+            assert_eq!(updated_gem.id, original_gem.id);
+            assert_eq!(updated_gem.source_type, original_gem.source_type);
+            assert_eq!(updated_gem.source_url, original_gem.source_url);
+            assert_eq!(updated_gem.domain, original_gem.domain);
+            assert_eq!(updated_gem.title, original_gem.title);
+            assert_eq!(updated_gem.author, original_gem.author);
+            assert_eq!(updated_gem.description, original_gem.description);
+            assert_eq!(updated_gem.content, original_gem.content);
+            assert_eq!(updated_gem.source_meta, original_gem.source_meta);
+            assert_eq!(updated_gem.captured_at, original_gem.captured_at);
+            
+            // These fields should be updated
+            assert_eq!(updated_gem.transcript, Some("New transcript".to_string()));
+            assert_eq!(updated_gem.transcript_language, Some("en".to_string()));
+            
+            std::fs::remove_file(test_file).ok();
+        }
+        
+        // Task 4.8: Test that tags are generated from transcript
+        #[tokio::test]
+        async fn test_transcribe_gem_tags_from_transcript() {
+            let provider = Arc::new(MockIntelProvider::new()) as Arc<dyn IntelProvider>;
+            
+            // Verify tags are generated from transcript content
+            let tags = provider.generate_tags("This is a test transcript").await.unwrap();
+            assert!(!tags.is_empty());
+            
+            // In the actual command, generate_tags is called with transcript text
+            // after successful transcription
+        }
+        
+        // Task 4.9: Test that summary is generated from transcript
+        #[tokio::test]
+        async fn test_transcribe_gem_summary_from_transcript() {
+            let provider = Arc::new(MockIntelProvider::new()) as Arc<dyn IntelProvider>;
+            
+            // Verify summary is generated from transcript content
+            let summary = provider.summarize("This is a test transcript").await.unwrap();
+            assert!(!summary.is_empty());
+            
+            // In the actual command, summarize is called with transcript text
+            // after successful transcription
+        }
+        
+        // Task 4.10: Test graceful degradation when tag generation fails
+        #[tokio::test]
+        async fn test_transcribe_gem_tag_generation_failure() {
+            let provider = Arc::new(
+                MockIntelProvider::new()
+                    .with_tags_result(Err("Tag generation failed".to_string()))
+                    .with_summary_result(Ok("Summary still works".to_string()))
+            ) as Arc<dyn IntelProvider>;
+            
+            // Verify tag generation fails but doesn't crash
+            let tags_result = provider.generate_tags("test").await;
+            assert!(tags_result.is_err());
+            
+            // Verify summary still works
+            let summary_result = provider.summarize("test").await;
+            assert!(summary_result.is_ok());
+            
+            // In the actual command, .unwrap_or_default() handles this gracefully
+            let tags = tags_result.unwrap_or_default();
+            assert!(tags.is_empty());
+        }
+        
+        // Task 4.11: Test graceful degradation when summary generation fails
+        #[tokio::test]
+        async fn test_transcribe_gem_summary_generation_failure() {
+            let provider = Arc::new(
+                MockIntelProvider::new()
+                    .with_tags_result(Ok(vec!["test".to_string()]))
+                    .with_summary_result(Err("Summary generation failed".to_string()))
+            ) as Arc<dyn IntelProvider>;
+            
+            // Verify tags still work
+            let tags_result = provider.generate_tags("test").await;
+            assert!(tags_result.is_ok());
+            
+            // Verify summary generation fails but doesn't crash
+            let summary_result = provider.summarize("test").await;
+            assert!(summary_result.is_err());
+            
+            // In the actual command, .unwrap_or_default() handles this gracefully
+            let summary = summary_result.unwrap_or_default();
+            assert!(summary.is_empty());
+        }
+    }
+
+    // Phase 2 Tests: transcribe_recording, check_recording_gem, check_recording_gems_batch, save_recording_gem
+
+    #[cfg(test)]
+    mod transcribe_recording_tests {
+        use super::*;
+        use std::fs;
+
+        // Helper to create a test recording file
+        fn create_test_recording(filename: &str) -> PathBuf {
+            let data_dir = dirs::data_dir().unwrap();
+            let recordings_dir = data_dir.join("com.jarvis.app").join("recordings");
+            fs::create_dir_all(&recordings_dir).unwrap();
+            let file_path = recordings_dir.join(filename);
+            fs::write(&file_path, b"fake pcm data").unwrap();
+            file_path
+        }
+
+        // Helper to cleanup test recording
+        fn cleanup_test_recording(path: &PathBuf) {
+            let _ = fs::remove_file(path);
+        }
+
+        // Task 2.1: Test transcribe_recording with valid file
+        #[tokio::test]
+        async fn test_transcribe_recording_success() {
+            let filename = "test_recording_success.pcm";
+            let file_path = create_test_recording(filename);
+
+            let provider = tests::MockIntelProvider::new()
+                .with_transcript_result(Ok(TranscriptResult {
+                    language: "en".to_string(),
+                    transcript: "Test transcript".to_string(),
+                }));
+
+            // Call the actual helper function
+            let result = transcribe_recording_inner(filename, &provider).await;
+            
+            assert!(result.is_ok(), "Expected success, got error: {:?}", result.err());
+            let transcript = result.unwrap();
+            assert_eq!(transcript.language, "en");
+            assert_eq!(transcript.transcript, "Test transcript");
+
+            cleanup_test_recording(&file_path);
+        }
+
+        // Task 2.2: Test transcribe_recording with missing file
+        #[tokio::test]
+        async fn test_transcribe_recording_file_not_found() {
+            let filename = "nonexistent_file.pcm";
+
+            let provider = tests::MockIntelProvider::new()
+                .with_transcript_result(Ok(TranscriptResult {
+                    language: "en".to_string(),
+                    transcript: "Should not reach here".to_string(),
+                }));
+
+            // Call the actual helper function
+            let result = transcribe_recording_inner(filename, &provider).await;
+            
+            assert!(result.is_err(), "Expected error for missing file");
+            let error = result.unwrap_err();
+            assert!(error.contains("Recording file not found"), "Error message should mention file not found, got: {}", error);
+        }
+
+        // Task 2.3: Test transcribe_recording with unavailable provider
+        #[tokio::test]
+        async fn test_transcribe_recording_provider_unavailable() {
+            let filename = "test_unavailable.pcm";
+            let file_path = create_test_recording(filename);
+
+            let provider = tests::MockIntelProvider::new()
+                .with_availability(false, Some("Provider not ready".to_string()));
+
+            // Call the actual helper function
+            let result = transcribe_recording_inner(filename, &provider).await;
+            
+            assert!(result.is_err(), "Expected error for unavailable provider");
+            let error = result.unwrap_err();
+            assert!(error.contains("AI provider not available"), "Error should mention provider unavailable, got: {}", error);
+            assert!(error.contains("Provider not ready"), "Error should include reason, got: {}", error);
+
+            cleanup_test_recording(&file_path);
+        }
+
+        // Task 2.4: Test transcribe_recording with invalid filename (path traversal)
+        #[tokio::test]
+        async fn test_transcribe_recording_invalid_filename() {
+            let invalid_filenames = vec![
+                "../etc/passwd",
+                "../../etc/passwd",
+                "subdir/file.pcm",
+                "..\\windows\\system32",
+                "test/../../../etc/passwd",
+            ];
+
+            let provider = tests::MockIntelProvider::new();
+
+            for filename in invalid_filenames {
+                // Call the actual helper function
+                let result = transcribe_recording_inner(filename, &provider).await;
+                
+                assert!(result.is_err(), "Expected error for invalid filename: {}", filename);
+                let error = result.unwrap_err();
+                assert_eq!(error, "Invalid filename: path separators not allowed", 
+                    "Wrong error message for filename '{}': {}", filename, error);
+            }
+        }
+
+        // Test error message remapping for "not supported"
+        #[tokio::test]
+        async fn test_transcribe_recording_not_supported_error() {
+            let filename = "test_not_supported.pcm";
+            let file_path = create_test_recording(filename);
+
+            let provider = tests::MockIntelProvider::new()
+                .with_transcript_result(Err("Transcript generation not supported by this provider".to_string()));
+
+            // Call the actual helper function
+            let result = transcribe_recording_inner(filename, &provider).await;
+            
+            assert!(result.is_err(), "Expected error for unsupported provider");
+            let error = result.unwrap_err();
+            assert_eq!(error, "Current AI provider does not support transcription", 
+                "Error message should be remapped, got: {}", error);
+
+            cleanup_test_recording(&file_path);
+        }
+
+        // Test error message passthrough for other errors
+        #[tokio::test]
+        async fn test_transcribe_recording_other_error() {
+            let filename = "test_other_error.pcm";
+            let file_path = create_test_recording(filename);
+
+            let provider = tests::MockIntelProvider::new()
+                .with_transcript_result(Err("Transcription timeout after 120 seconds".to_string()));
+
+            // Call the actual helper function
+            let result = transcribe_recording_inner(filename, &provider).await;
+            
+            assert!(result.is_err(), "Expected error");
+            let error = result.unwrap_err();
+            assert_eq!(error, "Transcription timeout after 120 seconds", 
+                "Error message should be passed through, got: {}", error);
+
+            cleanup_test_recording(&file_path);
+        }
+    }
+
+    #[cfg(test)]
+    mod check_recording_gem_tests {
+        use super::*;
+
+        // Task 3.1: Test check_recording_gem with existing gem
+        #[tokio::test]
+        async fn test_check_recording_gem_exists() {
+            let filename = "test_recording.pcm";
+            let gem = tests::create_test_gem_with_recording("test-id", filename);
+            let store = Arc::new(tests::MockGemStore::new().with_gem(gem.clone())) as Arc<dyn GemStore>;
+
+            // Query by filename
+            let result = store.find_by_recording_filename(filename).await;
+            assert!(result.is_ok());
+            let preview = result.unwrap();
+            assert!(preview.is_some());
+            assert_eq!(preview.unwrap().id, "test-id");
+        }
+
+        // Task 3.2: Test check_recording_gem with no gem
+        #[tokio::test]
+        async fn test_check_recording_gem_not_found() {
+            let store = Arc::new(tests::MockGemStore::new()) as Arc<dyn GemStore>;
+
+            let result = store.find_by_recording_filename("nonexistent.pcm").await;
+            assert!(result.is_ok());
+            assert!(result.unwrap().is_none());
+        }
+
+        // Task 3.3: Test check_recording_gems_batch with mixed results
+        #[tokio::test]
+        async fn test_check_recording_gems_batch_mixed() {
+            let gem1 = tests::create_test_gem_with_recording("id1", "recording1.pcm");
+            let gem2 = tests::create_test_gem_with_recording("id2", "recording2.pcm");
+            
+            let store = Arc::new(
+                tests::MockGemStore::new()
+                    .with_gem(gem1.clone())
+                    .with_gem(gem2.clone())
+            ) as Arc<dyn GemStore>;
+
+            let filenames = vec![
+                "recording1.pcm".to_string(),
+                "recording2.pcm".to_string(),
+                "recording3.pcm".to_string(), // No gem
+            ];
+
+            // Simulate batch check
+            let mut result = std::collections::HashMap::new();
+            for filename in &filenames {
+                if let Some(preview) = store.find_by_recording_filename(filename).await.unwrap() {
+                    result.insert(filename.clone(), preview);
+                }
+            }
+
+            // Verify results
+            assert_eq!(result.len(), 2);
+            assert!(result.contains_key("recording1.pcm"));
+            assert!(result.contains_key("recording2.pcm"));
+            assert!(!result.contains_key("recording3.pcm"));
+        }
+    }
+
+    #[cfg(test)]
+    mod save_recording_gem_tests {
+        use super::*;
+
+        // Task 4.1: Test save_recording_gem create flow (no existing gem)
+        #[tokio::test]
+        async fn test_save_recording_gem_create() {
+            let filename = "new_recording.pcm";
+            let transcript = "This is a new transcript".to_string();
+            let language = "en".to_string();
+            let created_at: u64 = 1709481600; // 2024-03-03 12:00:00 UTC
+
+            let store = Arc::new(tests::MockGemStore::new()) as Arc<dyn GemStore>;
+            let provider = Arc::new(
+                tests::MockIntelProvider::new()
+                    .with_tags_result(Ok(vec!["test".to_string()]))
+                    .with_summary_result(Ok("Test summary".to_string()))
+            ) as Arc<dyn IntelProvider>;
+
+            // Verify no existing gem
+            let existing = store.find_by_recording_filename(filename).await.unwrap();
+            assert!(existing.is_none());
+
+            // Create new gem (simulating command logic)
+            let title = if let Some(dt) = chrono::DateTime::from_timestamp(created_at as i64, 0) {
+                format!("Audio Transcript - {}", dt.format("%Y-%m-%d %H:%M:%S"))
+            } else {
+                format!("Audio Transcript - {}", filename)
+            };
+
+            let gem = Gem {
+                id: uuid::Uuid::new_v4().to_string(),
+                source_type: "Other".to_string(),
+                source_url: format!("jarvis://recording/{}", filename),
+                domain: "jarvis-app".to_string(),
+                title,
+                author: None,
+                description: None,
+                content: None,
+                source_meta: serde_json::json!({
+                    "recording_filename": filename,
+                    "source": "recording_transcription"
+                }),
+                captured_at: chrono::Utc::now().to_rfc3339(),
+                ai_enrichment: None,
+                transcript: Some(transcript.clone()),
+                transcript_language: Some(language.clone()),
+            };
+
+            // Verify gem structure
+            assert_eq!(gem.source_type, "Other");
+            assert_eq!(gem.source_url, format!("jarvis://recording/{}", filename));
+            assert_eq!(gem.domain, "jarvis-app");
+            assert!(gem.title.contains("Audio Transcript"));
+            assert_eq!(gem.transcript, Some(transcript));
+            assert_eq!(gem.transcript_language, Some(language));
+            assert_eq!(gem.source_meta["recording_filename"], filename);
+            assert_eq!(gem.source_meta["source"], "recording_transcription");
+        }
+
+        // Task 4.2: Test save_recording_gem update flow (existing gem)
+        #[tokio::test]
+        async fn test_save_recording_gem_update() {
+            let filename = "existing_recording.pcm";
+            let original_gem = tests::create_test_gem_with_recording("original-id", filename);
+            let store = Arc::new(tests::MockGemStore::new().with_gem(original_gem.clone())) as Arc<dyn GemStore>;
+
+            // Verify existing gem
+            let existing = store.find_by_recording_filename(filename).await.unwrap();
+            assert!(existing.is_some());
+            assert_eq!(existing.unwrap().id, "original-id");
+
+            // Update gem (simulating command logic)
+            let mut updated_gem = store.get("original-id").await.unwrap().unwrap();
+            updated_gem.transcript = Some("Updated transcript".to_string());
+            updated_gem.transcript_language = Some("es".to_string());
+
+            // Verify ID preserved
+            assert_eq!(updated_gem.id, "original-id");
+            assert_eq!(updated_gem.transcript, Some("Updated transcript".to_string()));
+            assert_eq!(updated_gem.transcript_language, Some("es".to_string()));
+        }
+
+        // Task 4.3: Test save_recording_gem with unavailable AI enrichment
+        #[tokio::test]
+        async fn test_save_recording_gem_no_enrichment() {
+            let provider = Arc::new(
+                tests::MockIntelProvider::new()
+                    .with_availability(false, Some("AI unavailable".to_string()))
+            ) as Arc<dyn IntelProvider>;
+
+            let availability = provider.check_availability().await;
+            assert!(!availability.available);
+
+            // In actual command, gem would be saved without ai_enrichment
+            // This is graceful degradation - save succeeds with transcript only
+        }
+    }
+

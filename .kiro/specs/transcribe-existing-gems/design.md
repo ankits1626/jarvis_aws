@@ -6,13 +6,13 @@ This feature enables users to generate accurate multilingual transcripts for exi
 
 This design adds a dedicated "Transcribe" action that:
 1. Fixes a critical bug in `extract_recording_path()` that prevents recording detection
-2. Adds a new `transcribe_gem` Tauri command for standalone transcription
-3. Provides UI controls to transcribe individual gems without re-running full enrichment
+2. Adds a new `transcribe_gem` Tauri command for standalone transcription with re-enrichment
+3. Provides UI controls to transcribe and re-enrich individual gems based on the accurate MLX transcript
 4. Displays transcript status and content in the gem list and expanded views
 
 ### Key Design Decisions
 
-**Separation of Concerns**: Transcription is independent from enrichment (tags/summary generation). Users can transcribe without regenerating AI metadata, and vice versa.
+**Transcript-Based Re-enrichment**: When transcribing, the system also regenerates tags and summary based on the accurate MLX Omni transcript. This provides better metadata than the original Whisper real-time transcript, improving gem organization and searchability.
 
 **Bug Fix First**: The `extract_recording_path()` function currently checks `source_type != "Recording"` which causes all recording gems to be skipped (they use `source_type: "Other"`). This must be fixed to enable both the new transcribe command and the existing enrich flow.
 
@@ -46,6 +46,12 @@ This design adds a dedicated "Transcribe" action that:
          ├──► IntelProvider::generate_transcript()
          │    └──► MlxProvider (via sidecar)
          │
+         ├──► IntelProvider::generate_tags()
+         │    └──► MlxProvider (via sidecar)
+         │
+         ├──► IntelProvider::summarize()
+         │    └──► MlxProvider (via sidecar)
+         │
          └──► GemStore::save()
 ```
 
@@ -57,9 +63,12 @@ This design adds a dedicated "Transcribe" action that:
 4. Backend extracts recording path from `source_meta.recording_filename`
 5. Backend calls `provider.generate_transcript(audio_path)`
 6. MLX sidecar processes audio and returns `{language, transcript}`
-7. Backend updates gem with transcript data
-8. Backend saves gem and returns updated version
-9. Frontend updates local state to show transcript
+7. Backend updates `gem.transcript` and `gem.transcript_language`
+8. Backend calls `provider.generate_tags(transcript)` to generate tags from the transcript
+9. Backend calls `provider.summarize(transcript)` to generate summary from the transcript
+10. Backend updates `gem.ai_enrichment` with enrichment metadata (tags, summary, provider, timestamp)
+11. Backend saves gem and returns updated version
+12. Frontend updates local state to show transcript, tags, and summary
 
 ### Recording Gem Detection
 
@@ -86,10 +95,32 @@ fn extract_recording_path(gem: &Gem) -> Option<PathBuf>
 
 **Logic**:
 1. Check `source_meta` for keys in priority order: `recording_filename`, `filename`, `recording_path`, `file`, `path`
-2. If found, construct path: `~/.jarvis/recordings/{filename}`
+2. If found, construct path: `dirs::data_dir()/com.jarvis.app/recordings/{filename}` (on macOS: `~/Library/Application Support/com.jarvis.app/recordings/{filename}`)
 3. Return `Some(path)` if found, `None` otherwise
 
 **Impact**: This fix enables both the new `transcribe_gem` command AND fixes the existing `enrich_gem` flow to generate transcripts when `transcription_engine == "mlx-omni"`.
+
+### Backend: `enrich_content()` Flow Reordering
+
+**Location**: `src-tauri/src/commands.rs` - `enrich_content()` function
+
+**Change**: Reorder the enrichment steps to generate transcript BEFORE tags and summary, so that tags/summary can be based on the accurate MLX Omni transcript instead of the Whisper real-time content.
+
+**Original Order**:
+1. Generate tags from `content` (Whisper transcript)
+2. Generate summary from `content` (Whisper transcript)
+3. Generate transcript from audio file (if recording gem + MLX Omni enabled)
+
+**New Order**:
+1. Generate transcript from audio file (if recording gem + MLX Omni enabled)
+2. Generate tags from `transcript` if available, otherwise from `content`
+3. Generate summary from `transcript` if available, otherwise from `content`
+
+**Rationale**: The MLX Omni transcript is more accurate than the Whisper real-time transcript, especially for multilingual content. By generating it first, we ensure that tags and summary are based on the best available text representation of the audio.
+
+**Impact**: Recording gems enriched after this change will have better tags and summaries. Existing gems can use the `transcribe_gem` command to regenerate their metadata based on the MLX transcript.
+
+**Note**: The `enrich_content()` function does not check provider availability for transcription. The caller (`enrich_gem` or `save_gem`) is responsible for verifying that the provider supports transcription before calling `enrich_content()`.
 
 ### Backend: `transcribe_gem` Command
 
@@ -102,17 +133,22 @@ pub async fn transcribe_gem(
     id: String,
     gem_store: State<'_, Arc<dyn GemStore>>,
     intel_provider: State<'_, Arc<dyn IntelProvider>>,
+    settings_manager: State<'_, Arc<RwLock<SettingsManager>>>,
 ) -> Result<Gem, String>
 ```
 
 **Logic**:
+0. Check provider availability for transcription support
 1. Fetch gem by ID from store
 2. Extract recording path using `extract_recording_path()`
 3. Verify recording file exists on disk
 4. Call `provider.generate_transcript(audio_path)`
 5. Update `gem.transcript` and `gem.transcript_language`
-6. Save updated gem
-7. Return updated gem
+6. Generate tags from transcript using `provider.generate_tags()`
+7. Generate summary from transcript using `provider.summarize()`
+8. Update `gem.ai_enrichment` with enrichment metadata (source, timestamp)
+9. Save updated gem
+10. Return updated gem
 
 **Error Handling**:
 - Gem not found: `"Gem with id '{id}' not found"`
@@ -122,9 +158,10 @@ pub async fn transcribe_gem(
 - Transcription failure: Forward error from provider
 
 **Constraints**:
-- Does NOT modify `ai_enrichment`, `tags`, or `summary`
-- Only updates `transcript` and `transcript_language`
-- Uses 120s timeout (inherited from `MlxProvider::generate_transcript_internal()`)
+- Updates `transcript`, `transcript_language`, `tags`, `summary`, and `ai_enrichment`
+- Tags and summary are generated from the MLX Omni transcript (not the Whisper content)
+- Uses 120s timeout for transcription (inherited from `MlxProvider::generate_transcript_internal()`)
+- Tag generation and summarization use standard timeouts from the provider
 
 ### Backend: Command Registration
 
@@ -158,11 +195,11 @@ const showTranscribeButton =
 {showTranscribeButton && (
   <button
     onClick={handleTranscribe}
-    className="gem-transcribe-button"
+    className="gem-enrich-button"
     disabled={transcribing}
-    title="Generate accurate multilingual transcript"
+    title="Transcribe recording"
   >
-    {transcribing ? '...' : '🎙️'}
+    {transcribing ? '...' : 'Transcribe'}
   </button>
 )}
 ```
@@ -174,10 +211,18 @@ const handleTranscribe = async () => {
   setTranscribeError(null);
   try {
     const updatedGem = await invoke<Gem>('transcribe_gem', { id: gem.id });
-    // Update local state with transcript data
+    // Update local state with transcript, tags, summary, and enrichment data
+    // Extract provider and model from ai_enrichment to construct enrichment_source
+    const provider = updatedGem.ai_enrichment?.provider;
+    const model = updatedGem.ai_enrichment?.model;
+    const source = provider && model ? `${provider} / ${model}` : provider || null;
+    
     setLocalGem({
       ...localGem,
       transcript_language: updatedGem.transcript_language,
+      tags: updatedGem.ai_enrichment?.tags || localGem.tags,
+      summary: updatedGem.ai_enrichment?.summary || localGem.summary,
+      enrichment_source: source || localGem.enrichment_source,
     });
     // Update fullGem cache if expanded
     if (fullGem) {
@@ -205,7 +250,7 @@ const showTranscriptBadge =
 **Badge Rendering**:
 ```tsx
 {showTranscriptBadge && (
-  <span className="transcript-badge" title="Transcript available">
+  <span className="gem-lang-badge" title="Transcript available">
     {gem.transcript_language}
   </span>
 )}
@@ -244,7 +289,7 @@ pub struct Gem {
     pub captured_at: String,
     pub ai_enrichment: Option<serde_json::Value>,
     pub transcript: Option<String>,           // MLX Omni transcript (NEW USAGE)
-    pub transcript_language: Option<String>,  // ISO 639-1 code (NEW USAGE)
+    pub transcript_language: Option<String>,  // Human-readable language name (NEW USAGE)
 }
 ```
 
@@ -272,7 +317,7 @@ pub struct GemPreview {
 
 ```rust
 pub struct TranscriptResult {
-    pub language: String,    // ISO 639-1 code (e.g., "en", "zh", "hi")
+    pub language: String,    // Human-readable language name (e.g., "English", "Chinese", "Hindi")
     pub transcript: String,  // Full transcript text
 }
 ```
@@ -287,7 +332,7 @@ pub struct TranscriptResult {
 
 **Fallback Keys** (checked in order): `filename`, `recording_path`, `file`, `path`
 
-**Path Construction**: `~/.jarvis/recordings/{recording_filename}`
+**Path Construction**: `dirs::data_dir()/com.jarvis.app/recordings/{recording_filename}` (on macOS: `~/Library/Application Support/com.jarvis.app/recordings/{recording_filename}`)
 
 ## Correctness Properties
 
@@ -305,7 +350,7 @@ After analyzing the acceptance criteria, I identified the following testable pro
 
 ### Property 1: Recording Path Extraction from Metadata
 
-*For any* gem with a recording filename key (`recording_filename`, `filename`, `recording_path`, `file`, or `path`) in `source_meta`, `extract_recording_path()` should return `Some(~/.jarvis/recordings/{filename})` regardless of the gem's `source_type` value.
+*For any* gem with a recording filename key (`recording_filename`, `filename`, `recording_path`, `file`, or `path`) in `source_meta`, `extract_recording_path()` should return `Some(dirs::data_dir()/com.jarvis.app/recordings/{filename})` regardless of the gem's `source_type` value.
 
 **Validates: Requirements 1.1, 1.2**
 
@@ -315,11 +360,11 @@ After analyzing the acceptance criteria, I identified the following testable pro
 
 **Validates: Requirements 1.3**
 
-### Property 3: Transcription Preserves Non-Transcript Fields
+### Property 3: Transcription Updates Only Expected Fields
 
-*For any* gem before and after calling `transcribe_gem`, all fields except `transcript` and `transcript_language` should remain unchanged (id, source_type, source_url, domain, title, author, description, content, source_meta, captured_at, ai_enrichment should be identical).
+*For any* gem before and after calling `transcribe_gem`, only the following fields should change: `transcript`, `transcript_language`, `tags`, `summary`, and `ai_enrichment`. All other fields (id, source_type, source_url, domain, title, author, description, content, source_meta, captured_at) should remain unchanged.
 
-**Validates: Requirements 2.6**
+**Validates: Requirements 2.6 (modified)**
 
 ### Property 4: Transcribe Button Visibility
 
@@ -349,6 +394,11 @@ After analyzing the acceptance criteria, I identified the following testable pro
 
 ### Backend Errors
 
+**Provider Unavailable**:
+- Condition: `provider.check_availability()` returns `available: false`
+- Response: `Err(format!("AI provider not available: {}", availability.reason.unwrap_or_else(|| "Unknown reason".to_string())))`
+- User action: Switch to MLX provider in settings or check provider configuration
+
 **Gem Not Found**:
 - Condition: `gem_store.get(id)` returns `None`
 - Response: `Err("Gem with id '{id}' not found")`
@@ -374,6 +424,12 @@ After analyzing the acceptance criteria, I identified the following testable pro
 - Response: Forward error from provider (e.g., "Model does not support audio", "Sidecar crashed")
 - User action: Check model capabilities, restart sidecar, check logs
 
+**Tag/Summary Generation Failed**:
+- Condition: `provider.generate_tags()` or `provider.summarize()` returns error after successful transcription
+- Response: Graceful degradation - transcript is saved, but tags/summary remain empty
+- Behavior: Uses `unwrap_or_default()` to silently proceed with empty tags/summary
+- User action: Transcript is still available; tags/summary can be regenerated by re-enriching the gem
+
 **Sidecar Crash**:
 - Condition: MLX sidecar process terminates during transcription
 - Response: Error from provider (e.g., "broken pipe", "closed connection")
@@ -390,7 +446,7 @@ After analyzing the acceptance criteria, I identified the following testable pro
 **Loading States**:
 - Disable Transcribe button during transcription
 - Show "..." text in button
-- Optional: Show progress message "⏳ Generating accurate multilingual transcript..."
+- Show status banner message "Transcribing audio..."
 
 ### Timeout Handling
 
@@ -444,7 +500,9 @@ fn prop_extract_recording_path_with_metadata() { ... }
 7. `test_transcribe_gem_no_recording` - Gem has no recording metadata
 8. `test_transcribe_gem_file_not_found` - Recording file missing
 9. `test_transcribe_gem_provider_unsupported` - Provider doesn't support transcription
-10. `test_transcribe_gem_preserves_fields` - Only transcript fields change
+10. `test_transcribe_gem_updates_expected_fields` - Only transcript, tags, summary, ai_enrichment change
+11. `test_transcribe_gem_generates_tags_from_transcript` - Tags generated from MLX transcript
+12. `test_transcribe_gem_generates_summary_from_transcript` - Summary generated from MLX transcript
 
 ### Backend Property Tests
 
@@ -453,7 +511,7 @@ fn prop_extract_recording_path_with_metadata() { ... }
 **Property Tests**:
 1. **Property 1**: For any gem with recording filename keys, path extraction succeeds
 2. **Property 2**: For any gem without recording filename keys, path extraction returns None
-3. **Property 3**: For any gem, transcription only modifies transcript fields
+3. **Property 3**: For any gem, transcription only modifies transcript, tags, summary, and ai_enrichment fields
 
 **Generators**:
 - `arb_gem_with_recording()` - Generates gems with recording metadata
@@ -495,13 +553,13 @@ fn prop_extract_recording_path_with_metadata() { ... }
 ### Integration Tests
 
 **Manual Testing Scenarios**:
-1. Transcribe a recording gem without transcript → Success
-2. Transcribe a recording gem with existing tags/summary → Only transcript added
+1. Transcribe a recording gem without transcript → Success, tags/summary generated
+2. Transcribe a recording gem with existing tags/summary → Transcript, tags, and summary regenerated from MLX transcript
 3. Attempt to transcribe non-recording gem → Error displayed
 4. Attempt to transcribe with IntelligenceKit provider → Error displayed
 5. Transcribe with missing recording file → Error displayed
 6. View expanded gem with both MLX and Whisper transcripts → Both displayed correctly
-7. Filter gems by tag after transcription → Transcription doesn't affect tags
+7. Filter gems by tag after transcription → New tags are searchable and filterable
 
 **End-to-End Test**:
 1. Create a recording gem (via recording flow)
@@ -521,11 +579,11 @@ fn prop_extract_recording_path_with_metadata() { ... }
 - `test.pcm`
 
 **Sample Languages**:
-- `en` (English)
-- `zh` (Chinese)
-- `hi` (Hindi)
-- `es` (Spanish)
-- `fr` (French)
+- `English`
+- `Chinese`
+- `Hindi`
+- `Spanish`
+- `French`
 
 **Sample Transcripts**:
 - Short: "Hello, how are you?"

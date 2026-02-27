@@ -101,4 +101,18 @@ pub trait GemStore: Send + Sync {
     
     /// Delete a gem by ID
     async fn delete(&self, id: &str) -> Result<(), String>;
+    
+    /// Find a gem by recording filename
+    /// 
+    /// Searches for gems where source_meta.recording_filename matches the provided filename.
+    /// If multiple gems exist for the same recording (edge case), returns the most recent one.
+    /// 
+    /// # Arguments
+    /// * `filename` - The recording filename to search for (e.g., "recording_1234567890.pcm")
+    /// 
+    /// # Returns
+    /// * `Ok(Some(GemPreview))` - If a gem with matching recording_filename is found
+    /// * `Ok(None)` - If no gem with matching recording_filename exists
+    /// * `Err(String)` - If the query fails
+    async fn find_by_recording_filename(&self, filename: &str) -> Result<Option<GemPreview>, String>;
 }

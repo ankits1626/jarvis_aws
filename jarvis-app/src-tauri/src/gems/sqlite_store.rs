@@ -460,6 +460,26 @@ impl GemStore for SqliteGemStore {
         
         Ok(())
     }
+    
+    async fn find_by_recording_filename(&self, filename: &str) -> Result<Option<GemPreview>, String> {
+        let conn = self.conn.lock()
+            .map_err(|e| format!("Failed to acquire lock: {}", e))?;
+        
+        let mut stmt = conn.prepare(
+            "SELECT id, source_type, source_url, domain, title, author, 
+                description, content, source_meta, captured_at, ai_enrichment, transcript, transcript_language
+            FROM gems
+            WHERE json_extract(source_meta, '$.recording_filename') = ?1
+            ORDER BY captured_at DESC
+            LIMIT 1"
+        ).map_err(|e| format!("Failed to prepare query: {}", e))?;
+        
+        let result = stmt.query_row(params![filename], Self::row_to_gem)
+            .optional()
+            .map_err(|e| format!("Failed to query gem: {}", e))?;
+        
+        Ok(result.map(|gem| Self::gem_to_preview(&gem)))
+    }
 }
 
 #[cfg(test)]
@@ -565,6 +585,8 @@ mod tests {
             source_meta: serde_json::json!({"version": 1}),
             captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
         };
         
         let saved1 = store.save(gem1.clone()).await
@@ -583,6 +605,8 @@ mod tests {
             source_meta: serde_json::json!({"version": 2}),
             captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
         };
         
         let saved2 = store.save(gem2.clone()).await
@@ -650,6 +674,8 @@ mod tests {
             source_meta: serde_json::json!({}),
             captured_at: (now - chrono::Duration::hours(2)).to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
         };
         
         let gem2 = Gem {
@@ -664,6 +690,8 @@ mod tests {
             source_meta: serde_json::json!({}),
             captured_at: now.to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
         };
         
         let gem3 = Gem {
@@ -678,6 +706,8 @@ mod tests {
             source_meta: serde_json::json!({}),
             captured_at: (now - chrono::Duration::hours(1)).to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
         };
         
         // Save in random order
@@ -714,6 +744,8 @@ mod tests {
                 source_meta: serde_json::json!({}),
                 captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
             };
             store.save(gem).await.expect("Save should succeed");
         }
@@ -751,6 +783,8 @@ mod tests {
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
         };
         
         store.save(gem).await.expect("Save should succeed");
@@ -789,6 +823,8 @@ mod tests {
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
         };
         
         store.save(gem).await.expect("Save should succeed");
@@ -823,6 +859,8 @@ mod tests {
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
         };
         
         store.save(gem).await.expect("Save should succeed");
@@ -872,6 +910,8 @@ mod tests {
                     source_meta: serde_json::json!({"test": "data"}),
                     captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
                 };
                 
                 let saved = store.save(gem.clone()).await.unwrap();
@@ -914,6 +954,8 @@ mod tests {
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
         };
         
         let gem2 = Gem {
@@ -928,6 +970,8 @@ mod tests {
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
         };
         
         store.save(gem1.clone()).await.expect("Save gem1");
@@ -957,6 +1001,8 @@ mod tests {
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
         };
         
         store.save(gem.clone()).await.expect("Save gem");
@@ -985,6 +1031,8 @@ mod tests {
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
         };
         
         store.save(gem.clone()).await.expect("Save gem");
@@ -1015,6 +1063,8 @@ mod tests {
                 source_meta: serde_json::json!({}),
                 captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
             };
             store.save(gem).await.expect("Save should succeed");
         }
@@ -1044,6 +1094,8 @@ mod tests {
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
         };
         store.save(gem).await.expect("Save should succeed");
         
@@ -1072,6 +1124,8 @@ mod tests {
                 source_meta: serde_json::json!({}),
                 captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
             };
             store.save(gem).await.expect("Save should succeed");
         }
@@ -1099,6 +1153,8 @@ mod tests {
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
         };
         store.save(gem).await.expect("Save should succeed");
         
@@ -1141,6 +1197,8 @@ mod tests {
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
         };
         
         store.save(gem).await.expect("Save should succeed");
@@ -1176,6 +1234,8 @@ mod tests {
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
         };
         
         let saved = store.save(gem).await.expect("Save should succeed");
@@ -1227,6 +1287,8 @@ mod tests {
             source_meta: serde_json::json!({}),
             captured_at: chrono::Utc::now().to_rfc3339(),
             ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
         };
         
         let saved = store.save(gem).await.expect("Save should succeed");
@@ -1242,4 +1304,195 @@ mod tests {
         let search_after = store.search("DELETEME", 10).await.expect("Search should succeed");
         assert_eq!(search_after.len(), 0, "Gem should not be searchable after delete");
     }
+
+    // Phase 1 Tests: find_by_recording_filename
+
+    #[tokio::test]
+    async fn test_find_by_recording_filename_with_existing_gem() {
+        let store = SqliteGemStore::new_in_memory()
+            .expect("Failed to create in-memory store");
+        
+        let filename = "recording_1234567890.pcm";
+        
+        // Create a gem with recording metadata
+        let gem = Gem {
+            id: uuid::Uuid::new_v4().to_string(),
+            source_type: "Other".to_string(),
+            source_url: "jarvis://recording/test".to_string(),
+            domain: "jarvis-app".to_string(),
+            title: "Test Recording".to_string(),
+            author: None,
+            description: Some("Test description".to_string()),
+            content: Some("Whisper transcript".to_string()),
+            source_meta: serde_json::json!({
+                "recording_filename": filename
+            }),
+            captured_at: chrono::Utc::now().to_rfc3339(),
+            ai_enrichment: None,
+            transcript: Some("MLX Omni transcript".to_string()),
+            transcript_language: Some("en".to_string()),
+        };
+        
+        store.save(gem.clone()).await.expect("Save should succeed");
+        
+        // Find by recording filename
+        let result = store.find_by_recording_filename(filename).await
+            .expect("Query should succeed");
+        
+        assert!(result.is_some(), "Should find gem with matching recording filename");
+        let preview = result.unwrap();
+        assert_eq!(preview.title, "Test Recording");
+        assert_eq!(preview.domain, "jarvis-app");
+        assert_eq!(preview.transcript_language, Some("en".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_find_by_recording_filename_with_no_gem() {
+        let store = SqliteGemStore::new_in_memory()
+            .expect("Failed to create in-memory store");
+        
+        // Search for non-existent recording
+        let result = store.find_by_recording_filename("nonexistent.pcm").await
+            .expect("Query should succeed");
+        
+        assert!(result.is_none(), "Should return None when no gem matches");
+    }
+
+    #[tokio::test]
+    async fn test_find_by_recording_filename_returns_most_recent() {
+        let store = SqliteGemStore::new_in_memory()
+            .expect("Failed to create in-memory store");
+        
+        let filename = "recording_duplicate.pcm";
+        let now = chrono::Utc::now();
+        
+        // Create first gem (older)
+        let gem1 = Gem {
+            id: uuid::Uuid::new_v4().to_string(),
+            source_type: "Other".to_string(),
+            source_url: "jarvis://recording/1".to_string(),
+            domain: "jarvis-app".to_string(),
+            title: "Older Recording".to_string(),
+            author: None,
+            description: None,
+            content: None,
+            source_meta: serde_json::json!({
+                "recording_filename": filename
+            }),
+            captured_at: (now - chrono::Duration::hours(2)).to_rfc3339(),
+            ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
+        };
+        
+        // Create second gem (newer)
+        let gem2 = Gem {
+            id: uuid::Uuid::new_v4().to_string(),
+            source_type: "Other".to_string(),
+            source_url: "jarvis://recording/2".to_string(),
+            domain: "jarvis-app".to_string(),
+            title: "Newer Recording".to_string(),
+            author: None,
+            description: None,
+            content: None,
+            source_meta: serde_json::json!({
+                "recording_filename": filename
+            }),
+            captured_at: now.to_rfc3339(),
+            ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
+        };
+        
+        store.save(gem1).await.expect("Save gem1 should succeed");
+        store.save(gem2).await.expect("Save gem2 should succeed");
+        
+        // Find by recording filename - should return the newer one
+        let result = store.find_by_recording_filename(filename).await
+            .expect("Query should succeed");
+        
+        assert!(result.is_some(), "Should find gem");
+        let preview = result.unwrap();
+        assert_eq!(preview.title, "Newer Recording", "Should return the most recent gem");
+    }
+
+    // Property 3: Recording Filename Query Correctness
+    proptest! {
+        #[test]
+        fn prop_find_by_recording_filename_correctness(
+            filename in "[a-z0-9_]{5,20}\\.pcm",
+            has_matching_gem in proptest::bool::ANY,
+            num_other_gems in 0usize..5,
+        ) {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let store = SqliteGemStore::new_in_memory()
+                    .expect("Failed to create in-memory store");
+                
+                let mut expected_gem_id: Option<String> = None;
+                
+                // Create a gem with matching recording_filename if has_matching_gem is true
+                if has_matching_gem {
+                    let gem = Gem {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        source_type: "Other".to_string(),
+                        source_url: format!("jarvis://recording/{}", uuid::Uuid::new_v4()),
+                        domain: "jarvis-app".to_string(),
+                        title: "Matching Recording".to_string(),
+                        author: None,
+                        description: None,
+                        content: None,
+                        source_meta: serde_json::json!({
+                            "recording_filename": filename.clone()
+                        }),
+                        captured_at: chrono::Utc::now().to_rfc3339(),
+                        ai_enrichment: None,
+                        transcript: None,
+                        transcript_language: None,
+                    };
+                    expected_gem_id = Some(gem.id.clone());
+                    store.save(gem).await.expect("Save should succeed");
+                }
+                
+                // Create other gems without matching recording_filename
+                for i in 0..num_other_gems {
+                    let other_gem = Gem {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        source_type: "Other".to_string(),
+                        source_url: format!("jarvis://recording/other_{}", i),
+                        domain: "jarvis-app".to_string(),
+                        title: format!("Other Recording {}", i),
+                        author: None,
+                        description: None,
+                        content: None,
+                        source_meta: serde_json::json!({
+                            "recording_filename": format!("other_{}.pcm", i)
+                        }),
+                        captured_at: chrono::Utc::now().to_rfc3339(),
+                        ai_enrichment: None,
+                        transcript: None,
+                        transcript_language: None,
+                    };
+                    store.save(other_gem).await.expect("Save should succeed");
+                }
+                
+                // Query by recording filename
+                let result = store.find_by_recording_filename(&filename).await
+                    .expect("Query should succeed");
+                
+                // Property: find_by_recording_filename returns gem if and only if matching gem exists
+                if has_matching_gem {
+                    prop_assert!(result.is_some(), "Should find gem when matching gem exists");
+                    let preview = result.unwrap();
+                    prop_assert_eq!(preview.id, expected_gem_id.unwrap(), "Should return the correct gem");
+                    prop_assert_eq!(preview.title, "Matching Recording");
+                } else {
+                    prop_assert!(result.is_none(), "Should return None when no matching gem exists");
+                }
+                
+                Ok(())
+            })?;
+        }
+    }
 }
+
