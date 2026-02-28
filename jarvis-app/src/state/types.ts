@@ -241,6 +241,42 @@ export interface SearchSettings {
   semantic_search_enabled: boolean;
   /** Minimum relevance score (0-100) for semantic search results. Default: 75 */
   semantic_search_accuracy: number;
+  /** Tavily API key for web search integration. null if not configured */
+  tavily_api_key: string | null;
+}
+
+/**
+ * Projects types
+ * 
+ * These types define the structure for project management (grouping gems)
+ */
+
+/** Full project representation matching Rust Project struct */
+export interface Project {
+  id: string;
+  title: string;
+  description: string | null;
+  objective: string | null;
+  status: 'active' | 'paused' | 'completed' | 'archived';
+  created_at: string;
+  updated_at: string;
+}
+
+/** Lightweight project for list views matching Rust ProjectPreview struct */
+export interface ProjectPreview {
+  id: string;
+  title: string;
+  description: string | null;
+  status: string;
+  gem_count: number;
+  updated_at: string;
+}
+
+/** Full project with associated gems matching Rust ProjectDetail struct */
+export interface ProjectDetail {
+  project: Project;
+  gem_count: number;
+  gems: GemPreview[];
 }
 
 /** Main settings structure matching Rust Settings struct */

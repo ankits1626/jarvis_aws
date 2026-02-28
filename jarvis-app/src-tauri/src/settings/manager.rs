@@ -69,6 +69,9 @@ pub struct SearchSettings {
     /// Minimum relevance score (0-100) for semantic search results. Default: 75.
     #[serde(default = "default_search_accuracy")]
     pub semantic_search_accuracy: u8,
+    /// Tavily API key for web search integration. None if not configured.
+    #[serde(default)]
+    pub tavily_api_key: Option<String>,
 }
 
 fn default_search_accuracy() -> u8 {
@@ -157,6 +160,7 @@ impl Default for SearchSettings {
         Self {
             semantic_search_enabled: false,
             semantic_search_accuracy: default_search_accuracy(),
+            tavily_api_key: None,
         }
     }
 }

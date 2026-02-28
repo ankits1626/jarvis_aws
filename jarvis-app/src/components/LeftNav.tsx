@@ -1,4 +1,4 @@
-type ActiveNav = 'record' | 'recordings' | 'gems' | 'youtube' | 'browser' | 'settings';
+type ActiveNav = 'record' | 'recordings' | 'gems' | 'projects' | 'youtube' | 'browser' | 'settings';
 
 interface LeftNavProps {
   activeNav: ActiveNav;
@@ -19,6 +19,7 @@ export default function LeftNav({
     { id: 'record', label: 'Record', icon: '🎙️' },
     { id: 'recordings', label: 'Recordings', icon: '📼' },
     { id: 'gems', label: 'Gems', icon: '💎' },
+    { id: 'projects', label: 'Projects', icon: '📁' },
     { id: 'youtube', label: 'YouTube', icon: '📺' },
     { id: 'browser', label: 'Browser', icon: '🌐' }
   ];

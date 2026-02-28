@@ -9,6 +9,7 @@ pub mod intelligence;
 pub mod knowledge;
 pub mod logging;
 pub mod platform;
+pub mod projects;
 pub mod recording;
 pub mod search;
 pub mod settings;
@@ -50,8 +51,15 @@ pub fn run() {
             // Initialize GemStore (SqliteGemStore as default implementation)
             let gem_store = SqliteGemStore::new()
                 .map_err(|e| format!("Failed to initialize gem store: {}", e))?;
+            let shared_conn = gem_store.get_conn();  // Get conn BEFORE Arc wrapping
             let gem_store_arc = Arc::new(gem_store) as Arc<dyn GemStore>;
             app.manage(gem_store_arc.clone());
+            
+            // Initialize ProjectStore with same connection
+            let project_store = projects::SqliteProjectStore::new(shared_conn)
+                .map_err(|e| format!("Failed to initialize project store: {}", e))?;
+            let project_store_arc = Arc::new(project_store) as Arc<dyn projects::ProjectStore>;
+            app.manage(project_store_arc);
             
             // Initialize Knowledge Store
             let app_data_dir = app.path().app_data_dir()
@@ -392,6 +400,15 @@ pub fn run() {
             knowledge::commands::get_gem_knowledge_subfile,
             knowledge::commands::regenerate_gem_knowledge,
             knowledge::commands::check_knowledge_availability,
+            projects::commands::create_project,
+            projects::commands::list_projects,
+            projects::commands::get_project,
+            projects::commands::update_project,
+            projects::commands::delete_project,
+            projects::commands::add_gems_to_project,
+            projects::commands::remove_gem_from_project,
+            projects::commands::get_project_gems,
+            projects::commands::get_gem_projects,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

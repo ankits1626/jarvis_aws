@@ -8,7 +8,7 @@ import GemDetailPanel from './GemDetailPanel';
 import ChatPanel from './ChatPanel';
 import { RecordingMetadata, TranscriptionSegment, RecordingTranscriptionState, CoPilotState, CoPilotStatus } from '../state/types';
 
-type ActiveNav = 'record' | 'recordings' | 'gems' | 'youtube' | 'browser' | 'settings';
+type ActiveNav = 'record' | 'recordings' | 'gems' | 'projects' | 'youtube' | 'browser' | 'settings';
 
 interface RightPanelProps {
   activeNav: ActiveNav;
@@ -375,6 +375,86 @@ export default function RightPanel({
       }
 
       // Single-panel mode: no knowledge files open (current behavior)
+      return (
+        <div className="right-panel" style={style}>
+          <GemDetailPanel
+            gemId={selectedGemId}
+            onDelete={onDeleteGem}
+            onTranscribe={onTranscribeGem}
+            onEnrich={onEnrichGem}
+            aiAvailable={aiAvailable}
+            onOpenKnowledgeFile={handleOpenKnowledgeFile}
+          />
+        </div>
+      );
+    }
+
+    return (
+      <div className="right-panel" style={style}>
+        <div className="right-panel-placeholder">
+          Select a gem to view details
+        </div>
+      </div>
+    );
+  }
+
+  // Projects nav: show gem detail panel when a gem is selected from a project
+  if (activeNav === 'projects') {
+    if (selectedGemId) {
+      // Tabbed mode: when knowledge files are open
+      if (openKnowledgeFiles.length > 0) {
+        return (
+          <div className="right-panel" style={style}>
+            <div className="record-tabs-view">
+              <div className="tab-buttons">
+                <button
+                  className={`tab-button ${activeGemTab === 'detail' ? 'active' : ''}`}
+                  onClick={() => setActiveGemTab('detail')}
+                >
+                  Detail
+                </button>
+                {openKnowledgeFiles.map(filename => (
+                  <button
+                    key={filename}
+                    className={`tab-button ${activeGemTab === filename ? 'active' : ''}`}
+                    onClick={() => setActiveGemTab(filename)}
+                  >
+                    {filename}
+                    <span
+                      className="tab-close"
+                      onClick={(e) => { e.stopPropagation(); handleCloseKnowledgeTab(filename); }}
+                    >
+                      ×
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <div className="tab-content">
+                {activeGemTab === 'detail' ? (
+                  <GemDetailPanel
+                    gemId={selectedGemId}
+                    onDelete={onDeleteGem}
+                    onTranscribe={onTranscribeGem}
+                    onEnrich={onEnrichGem}
+                    aiAvailable={aiAvailable}
+                    onOpenKnowledgeFile={handleOpenKnowledgeFile}
+                  />
+                ) : (
+                  <div className="knowledge-file-viewer">
+                    {knowledgeFileContents[activeGemTab] ? (
+                      <pre className="knowledge-file-content">{knowledgeFileContents[activeGemTab]}</pre>
+                    ) : (
+                      <div className="loading">Loading {activeGemTab}...</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // Single-panel mode: no knowledge files open
       return (
         <div className="right-panel" style={style}>
           <GemDetailPanel

@@ -43,6 +43,11 @@ impl SqliteGemStore {
         Ok(store)
     }
     
+    /// Get a clone of the database connection for sharing with other stores
+    pub fn get_conn(&self) -> Arc<Mutex<Connection>> {
+        self.conn.clone()
+    }
+    
     fn initialize_schema(&self) -> Result<(), String> {
         let conn = self.conn.lock()
             .map_err(|e| format!("Failed to acquire lock: {}", e))?;

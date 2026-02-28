@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
-import type { GemPreview, GemSearchResult, Gem, AvailabilityResult } from '../state/types';
+import type { GemPreview, GemSearchResult, Gem, AvailabilityResult, ProjectPreview } from '../state/types';
 
 interface GemsPanelProps {
   onClose?: () => void;
@@ -48,6 +48,10 @@ function GemCard({
   const [transcribing, setTranscribing] = useState(false);
   const [transcribeError, setTranscribeError] = useState<string | null>(null);
   const [localGem, setLocalGem] = useState<GemSearchResult>(gem);
+  const [showProjectDropdown, setShowProjectDropdown] = useState(false);
+  const [allProjects, setAllProjects] = useState<ProjectPreview[]>([]);
+  const [gemProjects, setGemProjects] = useState<Set<string>>(new Set());
+  const [projectsLoading, setProjectsLoading] = useState(false);
 
   // Update local gem when prop changes (e.g., after enrichment)
   useEffect(() => {
@@ -184,6 +188,64 @@ function GemCard({
   };
 
   const badgeClass = SOURCE_BADGE_CLASS[gem.source_type] || 'source-badge other';
+
+  const handleToggleProjectDropdown = async () => {
+    if (showProjectDropdown) {
+      setShowProjectDropdown(false);
+      return;
+    }
+    setProjectsLoading(true);
+    try {
+      // Fetch all projects and gem's current projects in parallel
+      const [projects, currentProjects] = await Promise.all([
+        invoke<ProjectPreview[]>('list_projects'),
+        invoke<ProjectPreview[]>('get_gem_projects', { gemId: gem.id }),
+      ]);
+      setAllProjects(projects);
+      setGemProjects(new Set(currentProjects.map(p => p.id)));
+      setShowProjectDropdown(true);
+    } catch (err) {
+      console.error('Failed to load projects:', err);
+    } finally {
+      setProjectsLoading(false);
+    }
+  };
+
+  const handleToggleProject = async (projectId: string) => {
+    const isInProject = gemProjects.has(projectId);
+    try {
+      if (isInProject) {
+        await invoke('remove_gem_from_project', { projectId, gemId: gem.id });
+        setGemProjects(prev => {
+          const next = new Set(prev);
+          next.delete(projectId);
+          return next;
+        });
+      } else {
+        await invoke('add_gems_to_project', { projectId, gemIds: [gem.id] });
+        setGemProjects(prev => {
+          const next = new Set(prev);
+          next.add(projectId);
+          return next;
+        });
+      }
+    } catch (err) {
+      console.error('Failed to toggle project membership:', err);
+    }
+  };
+
+  // Close project dropdown on click outside
+  useEffect(() => {
+    if (!showProjectDropdown) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('.project-dropdown-container')) {
+        setShowProjectDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showProjectDropdown]);
 
   return (
     <div className="gem-card" onClick={() => onSelect?.(gem.id)} style={{ cursor: onSelect ? 'pointer' : 'default' }}>
@@ -332,6 +394,47 @@ function GemCard({
             {transcribing ? '...' : 'Transcribe'}
           </button>
         )}
+        {/* Add to Project dropdown */}
+        <div className="project-dropdown-container">
+          <button
+            onClick={handleToggleProjectDropdown}
+            className="gem-enrich-button"
+            disabled={projectsLoading}
+            title="Add to Project"
+          >
+            {projectsLoading ? '...' : '📁+'}
+          </button>
+          {showProjectDropdown && (
+            <div className="project-dropdown">
+              <div className="project-dropdown-header">
+                Projects
+              </div>
+              {allProjects.length === 0 && (
+                <div className="project-dropdown-empty">
+                  No projects yet
+                </div>
+              )}
+              {allProjects.map(project => (
+                <div
+                  key={project.id}
+                  onClick={(e) => { e.stopPropagation(); handleToggleProject(project.id); }}
+                  className="project-dropdown-item"
+                >
+                  <input
+                    type="checkbox"
+                    checked={gemProjects.has(project.id)}
+                    readOnly
+                    style={{ pointerEvents: 'none' }}
+                  />
+                  <span style={{ flex: 1 }}>{project.title}</span>
+                  <span className="project-gem-count">
+                    {project.gem_count} gems
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
         {confirmDelete ? (
           <div className="gem-delete-confirm">
             <span>Delete?</span>

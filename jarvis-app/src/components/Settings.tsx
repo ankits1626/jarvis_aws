@@ -1388,6 +1388,56 @@ export function Settings({ onClose }: SettingsProps) {
               </div>
             </div>
           )}
+
+          <div style={{ marginTop: '16px', borderTop: '1px solid var(--border-color, #333)', paddingTop: '12px' }}>
+            <label style={{ fontSize: '13px', fontWeight: 600, display: 'block', marginBottom: '8px' }}>
+              Tavily API Key
+            </label>
+            <p style={{ margin: '0 0 8px 0', fontSize: '12px', opacity: 0.7 }}>
+              Required for web search integration in Projects. Get a key at{' '}
+              <a href="https://tavily.com" target="_blank" rel="noopener noreferrer" style={{ color: '#60a5fa' }}>
+                tavily.com
+              </a>
+            </p>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <input
+                type="password"
+                placeholder="tvly-..."
+                value={settings.search.tavily_api_key || ''}
+                onChange={async (e) => {
+                  const value = e.target.value.trim() || null;
+                  const updatedSettings = {
+                    ...settings,
+                    search: {
+                      ...settings.search,
+                      tavily_api_key: value,
+                    },
+                  };
+                  setSettings(updatedSettings);
+                  try {
+                    await invoke('update_settings', { settings: updatedSettings });
+                  } catch (err) {
+                    console.error('Failed to save Tavily API key:', err);
+                  }
+                }}
+                style={{
+                  flex: 1,
+                  padding: '6px 10px',
+                  borderRadius: '4px',
+                  border: '1px solid var(--border-color, #444)',
+                  background: 'var(--input-bg, #1a1a2e)',
+                  color: 'var(--text-primary, #e0e0e0)',
+                  fontSize: '13px',
+                  fontFamily: 'monospace',
+                }}
+              />
+            </div>
+            {settings.search.tavily_api_key && (
+              <p style={{ margin: '4px 0 0 0', fontSize: '11px', color: '#4ade80' }}>
+                API key configured
+              </p>
+            )}
+          </div>
         </section>
 
         <section className="settings-section">

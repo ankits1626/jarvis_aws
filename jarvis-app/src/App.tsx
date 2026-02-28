@@ -10,12 +10,13 @@ import { Settings } from "./components/Settings";
 import { YouTubeSection } from "./components/YouTubeSection";
 import { BrowserTool } from "./components/BrowserTool";
 import { GemsPanel } from "./components/GemsPanel";
+import { ProjectsContainer } from "./components/ProjectsContainer";
 import LeftNav from "./components/LeftNav";
 import RightPanel from "./components/RightPanel";
 import type { YouTubeDetectedEvent, TranscriptResult, RecordingTranscriptionState, GemPreview, AvailabilityResult, Gem, CoPilotState, CoPilotStatus } from "./state/types";
 import "./App.css";
 
-type ActiveNav = 'record' | 'recordings' | 'gems' | 'youtube' | 'browser' | 'settings';
+type ActiveNav = 'record' | 'recordings' | 'gems' | 'projects' | 'youtube' | 'browser' | 'settings';
 
 /**
  * Main application component for JarvisApp
@@ -57,7 +58,7 @@ function App() {
   
   // Resizable right panel
   const { width: rightPanelWidth, handleMouseDown: handleResizeMouseDown, isResizing } = useResizable();
-  const showRightPanel = activeNav === 'record' || activeNav === 'recordings' || activeNav === 'gems';
+  const showRightPanel = activeNav === 'record' || activeNav === 'recordings' || activeNav === 'gems' || activeNav === 'projects';
 
   // Recording transcription state
   const [recordingStates, setRecordingStates] = useState<Record<string, RecordingTranscriptionState>>({});
@@ -577,7 +578,11 @@ function App() {
     }
     
     setActiveNav(nav);
-    
+
+    // Reset right panel state when switching nav
+    setSelectedGemId(null);
+    deselectRecording();
+
     // Clear YouTube notification when navigating to YouTube
     if (nav === 'youtube') {
       setYoutubeNotification(false);
@@ -823,6 +828,10 @@ function App() {
         
         {activeNav === 'gems' && (
           <GemsPanel key={gemsPanelRefreshKey} onGemSelect={handleGemSelect} />
+        )}
+        
+        {activeNav === 'projects' && (
+          <ProjectsContainer onGemSelect={handleGemSelect} />
         )}
         
         {activeNav === 'youtube' && (

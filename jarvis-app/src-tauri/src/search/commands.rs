@@ -44,7 +44,7 @@ pub async fn search_gems(
             .collect());
     }
 
-    // Search via provider
+    // Search via provider (QMD semantic or FTS5)
     let search_results = provider.search(&query, limit).await?;
     eprintln!("Search: Provider returned {} raw results for \"{}\"", search_results.len(), query);
 
@@ -86,6 +86,31 @@ pub async fn search_gems(
             });
         } else {
             eprintln!("Search: Gem {} not found in DB (orphaned index entry)", result.gem_id);
+        }
+    }
+
+    // Fallback: if semantic provider returned 0 results, try FTS5 keyword search
+    if enriched.is_empty() {
+        eprintln!("Search: Semantic returned 0 results, falling back to FTS5 for \"{}\"", query);
+        if let Ok(fts_results) = gem_store.search(&query, limit).await {
+            eprintln!("Search: FTS5 fallback returned {} results for \"{}\"", fts_results.len(), query);
+            for gem in fts_results {
+                enriched.push(GemSearchResult {
+                    score: 1.0,
+                    matched_chunk: String::new(),
+                    match_type: MatchType::Keyword,
+                    id: gem.id,
+                    source_type: gem.source_type,
+                    source_url: gem.source_url,
+                    domain: gem.domain,
+                    title: gem.title,
+                    author: gem.author,
+                    description: gem.description,
+                    captured_at: gem.captured_at,
+                    tags: gem.tags,
+                    summary: gem.summary,
+                });
+            }
         }
     }
 
@@ -172,6 +197,14 @@ pub async fn setup_semantic_search(
         }
     };
     emit_progress(3, "Installing QMD", "done");
+
+    // Step 3b: Patch QMD reranker context size (2048 → 4096)
+    // QMD's character-based chunking at query time can produce chunks that exceed
+    // the reranker's 2048-token context window, causing crashes on certain queries.
+    // Qwen3-Reranker-0.6B supports up to 32K context, so 4096 is safe.
+    if let Err(e) = patch_qmd_rerank_context_size().await {
+        eprintln!("Search/Setup: QMD reranker patch failed (non-fatal): {}", e);
+    }
 
     // Step 4: Create collection
     emit_progress(4, "Creating search collection", "running");
@@ -433,4 +466,56 @@ async fn warm_up_qmd_query_model() -> Result<(), String> {
         eprintln!("Search/Setup: Warm-up query failed: {}", stderr.trim());
         Err(format!("qmd warm-up query failed: {}", stderr))
     }
+}
+
+/// Patch QMD's reranker context size from 2048 to 4096.
+///
+/// QMD uses character-based chunking at query time (3600 chars ≈ 900 tokens estimate),
+/// but markdown with URLs/short words can produce chunks of 1200-1800 actual tokens.
+/// Combined with ~200 tokens of template overhead, this exceeds the 2048-token context.
+/// Qwen3-Reranker-0.6B supports up to 32K context, so 4096 is well within range.
+async fn patch_qmd_rerank_context_size() -> Result<(), String> {
+    // Find QMD's installation path via `npm root -g`
+    let output = tokio::process::Command::new("npm")
+        .args(["root", "-g"])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to find npm global root: {}", e))?;
+
+    if !output.status.success() {
+        return Err("npm root -g failed".to_string());
+    }
+
+    let npm_root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let llm_js_path = std::path::PathBuf::from(&npm_root)
+        .join("@tobilu/qmd/dist/llm.js");
+
+    if !llm_js_path.exists() {
+        return Err(format!("QMD llm.js not found at {}", llm_js_path.display()));
+    }
+
+    let content = tokio::fs::read_to_string(&llm_js_path)
+        .await
+        .map_err(|e| format!("Failed to read llm.js: {}", e))?;
+
+    if content.contains("RERANK_CONTEXT_SIZE = 4096") {
+        eprintln!("Search/Setup: QMD reranker already patched to 4096");
+        return Ok(());
+    }
+
+    if !content.contains("RERANK_CONTEXT_SIZE = 2048") {
+        return Err("RERANK_CONTEXT_SIZE = 2048 not found in llm.js — QMD version may have changed".to_string());
+    }
+
+    let patched = content.replace(
+        "RERANK_CONTEXT_SIZE = 2048",
+        "RERANK_CONTEXT_SIZE = 4096",
+    );
+
+    tokio::fs::write(&llm_js_path, patched)
+        .await
+        .map_err(|e| format!("Failed to write patched llm.js: {}", e))?;
+
+    eprintln!("Search/Setup: Patched QMD reranker context size 2048 → 4096 at {}", llm_js_path.display());
+    Ok(())
 }
