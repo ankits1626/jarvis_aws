@@ -250,3 +250,6 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 - **IntelQueue serialization**: All LLM access (chat, co-pilot, enrichment, transcription) goes through one mpsc queue — no mutex contention, predictable ordering
 - **Per-recording folders**: Each recording gets a subfolder for transcripts and chat sessions, keeping related artifacts together
 - **MLX sidecar runtime patches**: Six monkey-patches fix critical bugs in `mlx-lm-omni` v0.1.3 (AudioTower reshape, float32 precision, conv weight layout, tokenizer compat, prefill chunking)
+- **QMD CLI mode**: Semantic search shells out to the `qmd` binary — no library dependency, no HTTP server. Simple process spawning with `tokio::process::Command`
+- **Single search provider**: One provider active at a time, selected on startup. No per-query mode toggle. FTS5 always available as fallback
+- **Tee-based logging**: OS-level fd redirection (pipe + dup2) captures all stderr to log files. Zero code changes needed — every existing `eprintln!` automatically logged
