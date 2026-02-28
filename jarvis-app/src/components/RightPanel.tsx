@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { TranscriptDisplay } from './TranscriptDisplay';
 // import { CoPilotPanel } from './CoPilotPanel'; // Replaced by CoPilotCardStack
 import { CoPilotCardStack } from './CoPilotCardStack';
@@ -71,12 +72,24 @@ export default function RightPanel({
   const [activeTab, setActiveTab] = useState<'transcript' | 'copilot' | 'chat'>('transcript');
   const [hasSeenCopilotUpdate, setHasSeenCopilotUpdate] = useState(false);
 
+  // Knowledge file viewer state for gems
+  const [openKnowledgeFiles, setOpenKnowledgeFiles] = useState<string[]>([]);
+  const [activeGemTab, setActiveGemTab] = useState<'detail' | string>('detail');
+  const [knowledgeFileContents, setKnowledgeFileContents] = useState<Record<string, string>>({});
+
   // Auto-switch to chat tab when a new session starts
   useEffect(() => {
     if (chatSessionId) {
       setActiveTab('chat');
     }
   }, [chatSessionId]);
+
+  // Reset knowledge file viewer state when gem changes
+  useEffect(() => {
+    setOpenKnowledgeFiles([]);
+    setActiveGemTab('detail');
+    setKnowledgeFileContents({});
+  }, [selectedGemId]);
 
   // Show notification dot when copilot has new data and user is on transcript tab
   const showNotificationDot = copilotEnabled && 
@@ -99,6 +112,50 @@ export default function RightPanel({
       setHasSeenCopilotUpdate(false);
     }
   }
+
+  // Knowledge file handlers for gems
+  const handleOpenKnowledgeFile = async (filename: string) => {
+    // Add tab if not already open
+    if (!openKnowledgeFiles.includes(filename)) {
+      setOpenKnowledgeFiles(prev => [...prev, filename]);
+    }
+    setActiveGemTab(filename);
+
+    // Fetch content if not cached
+    if (!knowledgeFileContents[filename] && selectedGemId) {
+      try {
+        const content = await invoke<string | null>(
+          'get_gem_knowledge_subfile',
+          { gemId: selectedGemId, filename }
+        );
+        setKnowledgeFileContents(prev => ({
+          ...prev,
+          [filename]: content ?? 'File not found'
+        }));
+      } catch (e) {
+        setKnowledgeFileContents(prev => ({
+          ...prev,
+          [filename]: `Error loading file: ${e}`
+        }));
+      }
+    }
+  };
+
+  const handleCloseKnowledgeTab = (filename: string) => {
+    setOpenKnowledgeFiles(prev => prev.filter(f => f !== filename));
+    // If closing the active tab, switch to detail or last open tab
+    if (activeGemTab === filename) {
+      const remaining = openKnowledgeFiles.filter(f => f !== filename);
+      setActiveGemTab(remaining.length > 0 ? remaining[remaining.length - 1] : 'detail');
+    }
+    // Clean up cached content
+    setKnowledgeFileContents(prev => {
+      const next = { ...prev };
+      delete next[filename];
+      return next;
+    });
+  };
+  
   // Record nav: show live transcript when recording or after recording completes
   if (activeNav === 'record') {
     const isRecording = recordingState === 'recording';
@@ -264,6 +321,60 @@ export default function RightPanel({
   // Gems nav: show gem detail panel when a gem is selected
   if (activeNav === 'gems') {
     if (selectedGemId) {
+      // Tabbed mode: when knowledge files are open
+      if (openKnowledgeFiles.length > 0) {
+        return (
+          <div className="right-panel" style={style}>
+            <div className="record-tabs-view">
+              <div className="tab-buttons">
+                <button
+                  className={`tab-button ${activeGemTab === 'detail' ? 'active' : ''}`}
+                  onClick={() => setActiveGemTab('detail')}
+                >
+                  Detail
+                </button>
+                {openKnowledgeFiles.map(filename => (
+                  <button
+                    key={filename}
+                    className={`tab-button ${activeGemTab === filename ? 'active' : ''}`}
+                    onClick={() => setActiveGemTab(filename)}
+                  >
+                    {filename}
+                    <span
+                      className="tab-close"
+                      onClick={(e) => { e.stopPropagation(); handleCloseKnowledgeTab(filename); }}
+                    >
+                      ×
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <div className="tab-content">
+                {activeGemTab === 'detail' ? (
+                  <GemDetailPanel
+                    gemId={selectedGemId}
+                    onDelete={onDeleteGem}
+                    onTranscribe={onTranscribeGem}
+                    onEnrich={onEnrichGem}
+                    aiAvailable={aiAvailable}
+                    onOpenKnowledgeFile={handleOpenKnowledgeFile}
+                  />
+                ) : (
+                  <div className="knowledge-file-viewer">
+                    {knowledgeFileContents[activeGemTab] ? (
+                      <pre className="knowledge-file-content">{knowledgeFileContents[activeGemTab]}</pre>
+                    ) : (
+                      <div className="loading">Loading {activeGemTab}...</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // Single-panel mode: no knowledge files open (current behavior)
       return (
         <div className="right-panel" style={style}>
           <GemDetailPanel
@@ -272,6 +383,7 @@ export default function RightPanel({
             onTranscribe={onTranscribeGem}
             onEnrich={onEnrichGem}
             aiAvailable={aiAvailable}
+            onOpenKnowledgeFile={handleOpenKnowledgeFile}
           />
         </div>
       );

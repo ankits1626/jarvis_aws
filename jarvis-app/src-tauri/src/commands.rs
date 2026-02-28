@@ -247,6 +247,7 @@ async fn enrich_content(
 /// ```
 #[tauri::command]
 pub async fn save_gem(
+    app_handle: tauri::AppHandle,
     gist: crate::browser::extractors::PageGist,
     gem_store: State<'_, Arc<dyn GemStore>>,
     intel_provider: State<'_, Arc<dyn IntelProvider>>,
@@ -304,6 +305,16 @@ pub async fn save_gem(
         Ok(g) => log_gem_save(&format!("save_gem: SUCCESS id={}", g.id)),
         Err(e) => log_gem_save(&format!("save_gem: ERROR {}", e)),
     }
+    
+    // Generate knowledge files
+    if let Ok(ref saved_gem) = result {
+        if let Some(ks) = app_handle.try_state::<Arc<dyn crate::knowledge::KnowledgeStore>>() {
+            if let Err(e) = ks.create(saved_gem).await {
+                eprintln!("Knowledge file creation failed for gem {}: {}", saved_gem.id, e);
+            }
+        }
+    }
+    
     result
 }
 
@@ -493,10 +504,20 @@ pub async fn search_gems(
 /// ```
 #[tauri::command]
 pub async fn delete_gem(
+    app_handle: tauri::AppHandle,
     id: String,
     gem_store: State<'_, Arc<dyn GemStore>>,
 ) -> Result<(), String> {
-    gem_store.delete(&id).await
+    gem_store.delete(&id).await?;
+    
+    // Delete knowledge files
+    if let Some(ks) = app_handle.try_state::<Arc<dyn crate::knowledge::KnowledgeStore>>() {
+        if let Err(e) = ks.delete(&id).await {
+            eprintln!("Knowledge file deletion failed for gem {}: {}", id, e);
+        }
+    }
+    
+    Ok(())
 }
 
 /// Get a gem by ID
@@ -664,7 +685,22 @@ pub async fn enrich_gem(
     gem.transcript_language = enrichment_result.transcript_language;
     
     // Save and return
-    gem_store.save(gem).await
+    let result = gem_store.save(gem).await;
+    
+    // Update knowledge files
+    if let Ok(ref enriched_gem) = result {
+        if let Some(ks) = app_handle.try_state::<Arc<dyn crate::knowledge::KnowledgeStore>>() {
+            // Update enrichment subfile
+            if let Some(ref enrichment) = enriched_gem.ai_enrichment {
+                let formatted = crate::knowledge::assembler::format_enrichment(enrichment);
+                if let Err(e) = ks.update_subfile(&enriched_gem.id, "enrichment.md", &formatted).await {
+                    eprintln!("Knowledge enrichment update failed: {}", e);
+                }
+            }
+        }
+    }
+    
+    result
 }
 
 /// Transcribe a recording gem and regenerate tags/summary from the transcript
@@ -683,6 +719,7 @@ pub async fn enrich_gem(
 /// * `Err(String)` - Error message if transcription fails
 #[tauri::command]
 pub async fn transcribe_gem(
+    app_handle: tauri::AppHandle,
     id: String,
     gem_store: State<'_, Arc<dyn GemStore>>,
     intel_provider: State<'_, Arc<dyn IntelProvider>>,
@@ -749,7 +786,18 @@ pub async fn transcribe_gem(
     }
 
     // Save and return
-    gem_store.save(gem).await
+    let result = gem_store.save(gem).await;
+    
+    // Recreate all knowledge files (transcript + re-enrichment changes multiple things)
+    if let Ok(ref gem) = result {
+        if let Some(ks) = app_handle.try_state::<Arc<dyn crate::knowledge::KnowledgeStore>>() {
+            if let Err(e) = ks.create(gem).await {
+                eprintln!("Knowledge file update failed: {}", e);
+            }
+        }
+    }
+    
+    result
 }
 
 /// Transcribe a recording file without creating a gem
@@ -928,6 +976,7 @@ pub async fn check_recording_gems_batch(
 /// * `Err(String)` - Error message if save fails
 #[tauri::command]
 pub async fn save_recording_gem(
+    app_handle: tauri::AppHandle,
     filename: String,
     transcript: String,
     language: String,
@@ -1058,6 +1107,16 @@ pub async fn save_recording_gem(
         Ok(g) => log_gem_save(&format!("SUCCESS gem saved id={}", g.id)),
         Err(e) => log_gem_save(&format!("ERROR gem_store.save failed: {}", e)),
     }
+    
+    // Create knowledge files (including copilot.md if present)
+    if let Ok(ref saved_gem) = result {
+        if let Some(ks) = app_handle.try_state::<Arc<dyn crate::knowledge::KnowledgeStore>>() {
+            if let Err(e) = ks.create(saved_gem).await {
+                eprintln!("Knowledge file creation failed for recording gem {}: {}", saved_gem.id, e);
+            }
+        }
+    }
+    
     result
 }
 

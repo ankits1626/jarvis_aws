@@ -6,6 +6,7 @@ pub mod error;
 pub mod files;
 pub mod gems;
 pub mod intelligence;
+pub mod knowledge;
 pub mod platform;
 pub mod recording;
 pub mod settings;
@@ -39,7 +40,22 @@ pub fn run() {
             // Initialize GemStore (SqliteGemStore as default implementation)
             let gem_store = SqliteGemStore::new()
                 .map_err(|e| format!("Failed to initialize gem store: {}", e))?;
-            app.manage(Arc::new(gem_store) as Arc<dyn GemStore>);
+            let gem_store_arc = Arc::new(gem_store) as Arc<dyn GemStore>;
+            app.manage(gem_store_arc.clone());
+            
+            // Initialize Knowledge Store
+            let app_data_dir = app.path().app_data_dir()
+                .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+            let knowledge_path = app_data_dir.join("knowledge");
+            let knowledge_event_emitter = Arc::new(
+                knowledge::store::TauriKnowledgeEventEmitter::new(app.handle().clone())
+            ) as Arc<dyn knowledge::store::KnowledgeEventEmitter + Send + Sync>;
+            let knowledge_store = knowledge::LocalKnowledgeStore::new(
+                knowledge_path.clone(),
+                knowledge_event_emitter.clone(),
+            );
+            let knowledge_store_arc = Arc::new(knowledge_store) as Arc<dyn knowledge::KnowledgeStore>;
+            app.manage(knowledge_store_arc.clone());
             
             // Initialize SettingsManager and add to managed state (wrapped in Arc<RwLock>)
             let settings_manager = SettingsManager::new()
@@ -238,6 +254,22 @@ pub fn run() {
                 eprintln!("BrowserObserver: Auto-start disabled in settings");
             }
             
+            // Run knowledge migration in background (non-blocking)
+            let ks_clone = knowledge_store_arc.clone();
+            let gs_clone = gem_store_arc.clone();
+            let ee_clone = knowledge_event_emitter.clone();
+            let kp_clone = knowledge_path.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = knowledge::migration::check_and_run_migration(
+                    ks_clone.as_ref(),
+                    gs_clone.as_ref(),
+                    ee_clone.as_ref(),
+                    &kp_clone,
+                ).await {
+                    eprintln!("Knowledge migration error: {}", e);
+                }
+            });
+            
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -302,6 +334,11 @@ pub fn run() {
             commands::chat_get_history,
             commands::chat_end_session,
             commands::get_saved_transcript,
+            knowledge::commands::get_gem_knowledge,
+            knowledge::commands::get_gem_knowledge_assembled,
+            knowledge::commands::get_gem_knowledge_subfile,
+            knowledge::commands::regenerate_gem_knowledge,
+            knowledge::commands::check_knowledge_availability,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

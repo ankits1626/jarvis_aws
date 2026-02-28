@@ -804,3 +804,42 @@ export interface CoPilotCardStackState {
   /** Final summary card (null until recording stops) */
   finalSummaryCard: FinalSummaryCard | null;
 }
+
+/**
+ * Knowledge File types
+ * 
+ * These types define the structure for gem knowledge files
+ */
+
+/** Knowledge subfile metadata matching Rust KnowledgeSubfile struct */
+export interface KnowledgeSubfile {
+  /** Filename (e.g., "gem.md", "content.md", "enrichment.md") */
+  filename: string;
+  
+  /** Whether the file exists on disk */
+  exists: boolean;
+  
+  /** File size in bytes */
+  size_bytes: number;
+  
+  /** ISO 8601 timestamp of last modification (null if file doesn't exist) */
+  last_modified: string | null;
+}
+
+/** Knowledge entry matching Rust KnowledgeEntry struct */
+export interface KnowledgeEntry {
+  /** Gem ID this knowledge belongs to */
+  gem_id: string;
+  
+  /** Assembled gem.md content */
+  assembled: string;
+  
+  /** Metadata for all known subfiles */
+  subfiles: KnowledgeSubfile[];
+  
+  /** Knowledge schema version */
+  version: number;
+  
+  /** ISO 8601 timestamp when knowledge was last assembled */
+  last_assembled: string;
+}

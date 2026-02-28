@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Gem } from '../state/types';
+import { Gem, KnowledgeEntry } from '../state/types';
 
 /** Shape of Co-Pilot data stored in gem's source_meta.copilot */
 interface CoPilotGemData {
@@ -20,6 +20,7 @@ interface GemDetailPanelProps {
   onTranscribe: () => void;
   onEnrich: () => void;
   aiAvailable: boolean;
+  onOpenKnowledgeFile: (filename: string) => void;
 }
 
 export default function GemDetailPanel({
@@ -27,14 +28,17 @@ export default function GemDetailPanel({
   onDelete,
   onTranscribe,
   onEnrich,
-  aiAvailable
+  aiAvailable,
+  onOpenKnowledgeFile
 }: GemDetailPanelProps) {
   const [gem, setGem] = useState<Gem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [knowledgeEntry, setKnowledgeEntry] = useState<KnowledgeEntry | null>(null);
 
   useEffect(() => {
     loadGem();
+    loadKnowledge();
   }, [gemId]);
 
   const loadGem = async () => {
@@ -50,8 +54,33 @@ export default function GemDetailPanel({
     }
   };
 
+  const loadKnowledge = async () => {
+    try {
+      const entry = await invoke<KnowledgeEntry | null>('get_gem_knowledge', { gemId });
+      setKnowledgeEntry(entry);
+    } catch {
+      // Silent fail — knowledge viewer is optional
+      setKnowledgeEntry(null);
+    }
+  };
+
+  const handleRegenerate = async () => {
+    try {
+      await invoke('regenerate_gem_knowledge', { gemId });
+      await loadKnowledge();
+    } catch (err) {
+      console.error('Failed to regenerate knowledge:', err);
+    }
+  };
+
   const formatDate = (isoString: string) => {
     return new Date(isoString).toLocaleString();
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
   if (loading) {
@@ -234,6 +263,50 @@ export default function GemDetailPanel({
           </div>
         </div>
       )}
+
+      {/* Knowledge Files Section */}
+      {knowledgeEntry && (() => {
+        const existingFiles = knowledgeEntry.subfiles.filter(
+          s => s.exists && s.filename !== 'meta.json'
+        );
+        const fileOrder = ['content.md', 'enrichment.md', 'transcript.md', 'copilot.md', 'gem.md'];
+        const sortedFiles = existingFiles.sort((a, b) => {
+          const aIndex = fileOrder.indexOf(a.filename);
+          const bIndex = fileOrder.indexOf(b.filename);
+          return (aIndex === -1 ? 999 : aIndex) - (bIndex === -1 ? 999 : bIndex);
+        });
+
+        if (sortedFiles.length === 0) {
+          return (
+            <div className="knowledge-file-tree">
+              <h4>Knowledge Files</h4>
+              <div className="no-knowledge-files">
+                <span>No knowledge files</span>
+                <button onClick={handleRegenerate} className="action-button">
+                  Generate
+                </button>
+              </div>
+            </div>
+          );
+        }
+
+        return (
+          <div className="knowledge-file-tree">
+            <h4>Knowledge Files</h4>
+            {sortedFiles.map(subfile => (
+              <div
+                key={subfile.filename}
+                className="knowledge-file-row"
+                onClick={() => onOpenKnowledgeFile(subfile.filename)}
+              >
+                <span className="file-icon">📄</span>
+                <span className="file-name">{subfile.filename}</span>
+                <span className="file-size">{formatFileSize(subfile.size_bytes)}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       <div className="gem-actions">
         {isAudioGem && (

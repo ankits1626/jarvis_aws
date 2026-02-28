@@ -58,7 +58,21 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
   - Co-Pilot tab persists after recording stops so accumulated intelligence remains accessible
   - Notification dot on Co-Pilot tab when new data arrives while viewing transcript
 
-### 5. AI Enrichment (On-Device)
+### 5. Chat with Recordings (Conversational Q&A)
+- **Chat with any recording** — click "Chat" on any recording to start a conversation about its content
+- Trait-based architecture (`Chatable` trait) — the chatbot is reusable for any content source (recordings now, gems/live recordings later)
+- **Automatic transcript generation** — if no transcript exists, generates one in the background via MLX Omni; shows spinner while preparing
+- **Transcript reuse** — transcripts saved to `recordings/{stem}/transcript.md`; both Transcribe button and Chat share the same cached file
+- **Non-blocking UX** — chat interface appears instantly, transcript generates in background with status events
+- **Fresh context on every message** — chatbot re-reads the transcript on each turn (handles growing sources like live recordings)
+- **Session logging** — every conversation saved as readable markdown (`recordings/{stem}/chat_session_{ts}.md`)
+- **Chat history in LLM prompt** — last 10 exchanges included for multi-turn coherence, context truncated to 14K chars
+- **Per-recording folder organization** — each recording gets its own subfolder for transcripts and chat sessions
+- Session cleanup on recording switch — selecting a different recording ends the previous chat session
+- **Repetition penalty** — logits processor prevents degenerate looping responses from the LLM
+- Powered by `IntelQueue` — serializes all LLM requests (chat, co-pilot, enrichment) through a single mpsc channel
+
+### 6. AI Enrichment (On-Device)
 - **Auto-tagging**: Generate 3–5 topic tags from content
 - **Auto-summarization**: One-sentence summary
 - **Transcript generation**: High-quality post-recording transcript (MLX Omni)
@@ -66,14 +80,15 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 - **Manual re-enrichment**: Enrich any existing gem on demand
 - Pluggable provider architecture: **MLX** (local LLM) → **IntelligenceKit** (Apple Foundation Models) → **NoOp** (graceful fallback)
 
-### 6. Model Management
+### 7. Model Management
 - **Whisper models**: Download/delete OpenAI Whisper models from Hugging Face
 - **WhisperKit models**: Download/manage Apple WhisperKit models
-- **LLM models**: Download/delete/switch MLX-compatible LLMs (Qwen3, etc.)
+- **LLM models**: Download/delete/switch MLX-compatible LLMs (Qwen3, Qwen2.5-Omni 3B/7B, etc.)
 - Real-time download progress tracking
 - Switch active LLM model at runtime
+- **7B conv weight auto-fix** — auto-detects and corrects PyTorch→MLX weight layout mismatch after model load
 
-### 7. Settings & Configuration
+### 8. Settings & Configuration
 - Transcription engine selection (whisper-rs / whisperkit / mlx-omni)
 - VAD enable/disable with threshold tuning
 - Whisper model selection
@@ -98,6 +113,7 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 - Self-hosted Inter + JetBrains Mono fonts
 - Resizable right panel via drag handle
 - Tabbed right panel during recording: **Transcript** and **Co-Pilot** tabs with notification dot for unseen updates
+- Tabbed right panel for recordings: **Details** and **Chat** tabs when a chat session is active
 - Co-Pilot Card Stack with animated card entrance, auto-collapse timers, hover-to-pause, and keyboard-accessible expand/collapse
 - Notification badge on YouTube tab when video detected
 - Error toasts for runtime issues (MLX sidecar crashes)
@@ -122,6 +138,7 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 | Data | Location |
 |---|---|
 | Recordings (PCM) | `~/Library/Application Support/com.jarvis.app/recordings/` |
+| Transcripts & chat logs | `~/Library/Application Support/com.jarvis.app/recordings/{stem}/` |
 | Gems database | `~/Library/Application Support/com.jarvis.app/gems.db` |
 | Whisper models | `~/Library/Application Support/com.jarvis.app/models/` |
 | LLM models | `~/Library/Application Support/com.jarvis.app/llm_models/` |
@@ -135,11 +152,12 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 
 ## Backend Commands (Tauri RPC)
 
-**50+ registered commands** across these domains:
+**55+ registered commands** across these domains:
 
 - **Recording** (5): start, stop, list, delete, convert to WAV
 - **Transcription** (4): get transcript, status, transcribe recording, transcribe gem
 - **Gems** (10): save, list, search, filter by tag, get, delete, enrich, save recording gem, check recording gem, batch check
+- **Chat** (5): start chat with recording, send message, get history, end session, get saved transcript
 - **Co-Pilot** (4): start, stop, get state, dismiss question
 - **AI/Intelligence** (9): availability check, MLX dependency check, venv setup/reset, MLX status, list/download/cancel/delete/switch LLM models
 - **Model Management** (7): list/download/cancel/delete Whisper models, WhisperKit status/list/download
@@ -157,3 +175,7 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 - **Sidecar architecture**: MLX inference runs as separate Python process to avoid blocking the Rust runtime
 - **Upsert by URL**: Natural deduplication — recapturing a page updates rather than duplicates
 - **PCM storage**: Raw audio for maximum flexibility, WAV conversion only for playback
+- **Trait-based chatbot**: `Chatable` trait decouples the chat engine from content types — adding chat to gems means implementing one trait, zero chatbot changes
+- **IntelQueue serialization**: All LLM access (chat, co-pilot, enrichment, transcription) goes through one mpsc queue — no mutex contention, predictable ordering
+- **Per-recording folders**: Each recording gets a subfolder for transcripts and chat sessions, keeping related artifacts together
+- **MLX sidecar runtime patches**: Six monkey-patches fix critical bugs in `mlx-lm-omni` v0.1.3 (AudioTower reshape, float32 precision, conv weight layout, tokenizer compat, prefill chunking)
