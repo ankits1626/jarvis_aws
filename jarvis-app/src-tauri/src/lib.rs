@@ -7,8 +7,10 @@ pub mod files;
 pub mod gems;
 pub mod intelligence;
 pub mod knowledge;
+pub mod logging;
 pub mod platform;
 pub mod recording;
+pub mod search;
 pub mod settings;
 pub mod shortcuts;
 pub mod transcription;
@@ -20,12 +22,20 @@ use files::FileManager;
 use gems::{GemStore, SqliteGemStore};
 use intelligence::{LlmModelManager, VenvManager};
 use recording::RecordingManager;
+use search::{FtsResultProvider, QmdResultProvider, SearchResultProvider};
 use settings::{ModelManager, SettingsManager};
 use shortcuts::ShortcutManager;
 use transcription::{TranscriptionConfig, TranscriptionManager, HybridProvider, WhisperKitProvider, TranscriptionProvider};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Initialize file logging before anything else
+    // Logs go to ~/Library/Application Support/com.jarvis.app/logs/
+    if let Some(logs_dir) = logging::logs_dir() {
+        logging::init(&logs_dir);
+    }
+    eprintln!("=== Jarvis App Starting ===");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
@@ -270,6 +280,46 @@ pub fn run() {
                 }
             });
             
+            // Initialize Search Provider
+            // Read search settings
+            let (search_enabled, search_accuracy) = {
+                let manager = app.state::<Arc<RwLock<SettingsManager>>>();
+                let settings = manager.read().expect("Failed to acquire settings read lock").get();
+                (settings.search.semantic_search_enabled, settings.search.semantic_search_accuracy)
+            };
+
+            let search_provider: Arc<dyn SearchResultProvider> = if search_enabled {
+                // Try to initialize QMD provider
+                match tauri::async_runtime::block_on(QmdResultProvider::find_qmd_binary()) {
+                    Some(qmd_path) => {
+                        let knowledge_path = app.path().app_data_dir()
+                            .expect("Failed to get app data dir")
+                            .join("knowledge");
+                        let qmd = QmdResultProvider::new(qmd_path.clone(), knowledge_path, search_accuracy);
+                        
+                        // Check availability before committing
+                        let availability = tauri::async_runtime::block_on(qmd.check_availability());
+                        if availability.available {
+                            eprintln!("Search: Using QMD semantic search provider ({})", qmd_path.display());
+                            Arc::new(qmd)
+                        } else {
+                            eprintln!("Search: QMD unavailable ({}), falling back to FTS5",
+                                availability.reason.unwrap_or_else(|| "unknown".to_string()));
+                            Arc::new(FtsResultProvider::new(gem_store_arc.clone()))
+                        }
+                    }
+                    None => {
+                        eprintln!("Search: QMD binary not found, falling back to FTS5");
+                        Arc::new(FtsResultProvider::new(gem_store_arc.clone()))
+                    }
+                }
+            } else {
+                eprintln!("Search: Using FTS5 keyword search provider (default)");
+                Arc::new(FtsResultProvider::new(gem_store_arc.clone()))
+            };
+            
+            app.manage(search_provider);
+            
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -302,7 +352,10 @@ pub fn run() {
             commands::export_gist,
             commands::save_gem,
             commands::list_gems,
-            commands::search_gems,
+            search::commands::search_gems,
+            search::commands::check_search_availability,
+            search::commands::setup_semantic_search,
+            search::commands::rebuild_search_index,
             commands::delete_gem,
             commands::get_gem,
             commands::enrich_gem,

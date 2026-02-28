@@ -12,6 +12,8 @@ pub struct Settings {
     pub intelligence: IntelligenceSettings,
     #[serde(default)]
     pub copilot: CoPilotSettings,
+    #[serde(default)]
+    pub search: SearchSettings,
 }
 
 /// Transcription-specific settings
@@ -57,6 +59,20 @@ pub struct CoPilotSettings {
     pub audio_overlap: u64,
     #[serde(default = "default_agent_logging")]
     pub agent_logging: bool,
+}
+
+/// Search-specific settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchSettings {
+    #[serde(default)]
+    pub semantic_search_enabled: bool,
+    /// Minimum relevance score (0-100) for semantic search results. Default: 75.
+    #[serde(default = "default_search_accuracy")]
+    pub semantic_search_accuracy: u8,
+}
+
+fn default_search_accuracy() -> u8 {
+    75
 }
 
 fn default_engine() -> String {
@@ -136,6 +152,15 @@ impl Default for CoPilotSettings {
     }
 }
 
+impl Default for SearchSettings {
+    fn default() -> Self {
+        Self {
+            semantic_search_enabled: false,
+            semantic_search_accuracy: default_search_accuracy(),
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -143,6 +168,7 @@ impl Default for Settings {
             browser: BrowserSettings::default(),
             intelligence: IntelligenceSettings::default(),
             copilot: CoPilotSettings::default(),
+            search: SearchSettings::default(),
         }
     }
 }

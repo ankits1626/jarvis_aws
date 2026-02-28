@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
-import type { GemPreview, Gem, AvailabilityResult } from '../state/types';
+import type { GemPreview, GemSearchResult, Gem, AvailabilityResult } from '../state/types';
 
 interface GemsPanelProps {
   onClose?: () => void;
@@ -29,7 +29,7 @@ function GemCard({
   onFilterByTag,
   onSelect
 }: { 
-  gem: GemPreview; 
+  gem: GemSearchResult; 
   onDelete: (id: string) => Promise<void>;
   aiAvailable: boolean;
   onFilterByTag: (tag: string) => void;
@@ -47,7 +47,7 @@ function GemCard({
   const [enrichError, setEnrichError] = useState<string | null>(null);
   const [transcribing, setTranscribing] = useState(false);
   const [transcribeError, setTranscribeError] = useState<string | null>(null);
-  const [localGem, setLocalGem] = useState<GemPreview>(gem);
+  const [localGem, setLocalGem] = useState<GemSearchResult>(gem);
 
   // Update local gem when prop changes (e.g., after enrichment)
   useEffect(() => {
@@ -189,6 +189,11 @@ function GemCard({
     <div className="gem-card" onClick={() => onSelect?.(gem.id)} style={{ cursor: onSelect ? 'pointer' : 'default' }}>
       <div className="gem-card-header">
         <span className={badgeClass}>{gem.source_type}</span>
+        {(gem.match_type === 'Semantic' || gem.match_type === 'Hybrid') && (
+          <span className="relevance-badge" title={`Relevance: ${Math.round(gem.score * 100)}%`}>
+            {Math.round(gem.score * 100)}%
+          </span>
+        )}
         <span className="gem-date">
           {new Date(gem.captured_at).toLocaleDateString()}
         </span>
@@ -387,8 +392,9 @@ function GemCard({
 }
 
 export function GemsPanel({ onClose, onGemSelect }: GemsPanelProps) {
-  const [gems, setGems] = useState<GemPreview[]>([]);
+  const [gems, setGems] = useState<GemSearchResult[]>([]);
   const [loading, setLoading] = useState(true);
+  const [searching, setSearching] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [aiAvailability, setAiAvailability] = useState<AvailabilityResult | null>(null);
@@ -409,35 +415,70 @@ export function GemsPanel({ onClose, onGemSelect }: GemsPanelProps) {
   }, []);
 
   const fetchGems = useCallback(async (query: string, tag: string | null) => {
+    const isSearch = !!query.trim();
     setLoading(true);
+    if (isSearch) setSearching(true);
     setError(null);
     try {
-      let results: GemPreview[];
+      let results: GemSearchResult[];
       if (tag) {
-        // Filter by tag
-        results = await invoke<GemPreview[]>('filter_gems_by_tag', { tag });
-      } else if (query.trim()) {
-        // Search by query
-        results = await invoke<GemPreview[]>('search_gems', { query });
+        // Filter by tag - convert GemPreview[] to GemSearchResult[]
+        console.log(`[Search] Filtering by tag: "${tag}"`);
+        const tagResults = await invoke<GemPreview[]>('filter_gems_by_tag', { tag });
+        results = tagResults.map(gem => ({
+          ...gem,
+          score: 1.0,
+          matched_chunk: '',
+          match_type: 'Keyword' as const,
+          enrichment_source: gem.enrichment_source || null,
+          transcript_language: gem.transcript_language || null,
+          content_preview: gem.content_preview || null,
+        }));
+        console.log(`[Search] Tag filter returned ${results.length} gems`);
       } else {
-        // List all
-        results = await invoke<GemPreview[]>('list_gems', {});
+        // Use new search_gems command for both search and list all
+        const trimmed = query.trim();
+        console.log(`[Search] query="${trimmed}" (${trimmed ? 'search' : 'list all'})`);
+        const start = performance.now();
+        results = await invoke<GemSearchResult[]>('search_gems', {
+          query: trimmed,
+          limit: 50
+        });
+        const elapsed = Math.round(performance.now() - start);
+        console.log(`[Search] Got ${results.length} results in ${elapsed}ms`);
+        // Log match types and scores for debugging
+        if (trimmed && results.length > 0) {
+          results.forEach((r, i) => {
+            console.log(`[Search]   #${i + 1} ${r.match_type} score=${r.score.toFixed(2)} "${r.title}"`);
+          });
+        }
       }
       setGems(results);
     } catch (err) {
+      console.error(`[Search] Error:`, err);
       setError(String(err));
     } finally {
       setLoading(false);
+      setSearching(false);
     }
   }, []);
 
-  // Debounced search (300ms) - also handles initial load since searchQuery starts as ''
+  // Load all gems on mount and when filter tag changes
   useEffect(() => {
-    const timer = setTimeout(() => {
+    if (filterTag) {
+      fetchGems('', filterTag);
+    } else if (!searchQuery.trim()) {
+      // Load all gems when search is empty
+      fetchGems('', null);
+    }
+  }, [filterTag]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Search on Enter key — avoids spamming QMD semantic search on every keystroke
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
       fetchGems(searchQuery, filterTag);
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [searchQuery, filterTag, fetchGems]);
+    }
+  };
 
   const handleFilterByTag = (tag: string) => {
     setFilterTag(tag);
@@ -497,11 +538,18 @@ export function GemsPanel({ onClose, onGemSelect }: GemsPanelProps) {
         <div className="gems-search">
           <input
             type="search"
-            placeholder="Search gems..."
+            placeholder="Search gems... (press Enter)"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              // If user clears the input, reload all gems immediately
+              if (!e.target.value.trim()) {
+                fetchGems('', filterTag);
+              }
+            }}
+            onKeyDown={handleSearchKeyDown}
             className="gems-search-input"
-            disabled={!!filterTag}
+            disabled={!!filterTag || searching}
           />
           {filterTag && (
             <div className="active-filter">
@@ -519,11 +567,38 @@ export function GemsPanel({ onClose, onGemSelect }: GemsPanelProps) {
           </div>
         )}
 
-        {loading && gems.length === 0 && (
+        {searching && (
+          <div className="searching-overlay" style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '40px 20px',
+            color: '#666',
+          }}>
+            <div className="searching-spinner" style={{
+              width: '32px',
+              height: '32px',
+              border: '3px solid #e0e0e0',
+              borderTop: '3px solid #0c5460',
+              borderRadius: '50%',
+              animation: 'spin 0.8s linear infinite',
+              marginBottom: '12px',
+            }} />
+            <div style={{ fontSize: '14px', fontWeight: 500 }}>
+              Searching...
+            </div>
+            <div style={{ fontSize: '12px', opacity: 0.7, marginTop: '4px' }}>
+              Semantic search may take a few seconds
+            </div>
+          </div>
+        )}
+
+        {!searching && loading && gems.length === 0 && (
           <div className="loading-state">Loading gems...</div>
         )}
 
-        {!loading && gems.length === 0 && (
+        {!searching && !loading && gems.length === 0 && (
           <div className="empty-state">
             {searchQuery.trim()
               ? 'No gems match your search.'
@@ -531,18 +606,20 @@ export function GemsPanel({ onClose, onGemSelect }: GemsPanelProps) {
           </div>
         )}
 
-        <div className="gems-list">
-          {gems.map(gem => (
-            <GemCard 
-              key={gem.id} 
-              gem={gem} 
-              onDelete={handleDelete}
-              aiAvailable={aiAvailability?.available || false}
-              onFilterByTag={handleFilterByTag}
-              onSelect={onGemSelect}
-            />
-          ))}
-        </div>
+        {!searching && (
+          <div className="gems-list">
+            {gems.map(gem => (
+              <GemCard
+                key={gem.id}
+                gem={gem}
+                onDelete={handleDelete}
+                aiAvailable={aiAvailability?.available || false}
+                onFilterByTag={handleFilterByTag}
+                onSelect={onGemSelect}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -8,6 +8,7 @@ use crate::agents::chatbot::{Chatbot, ChatMessage};
 use crate::agents::recording_chat::RecordingChatSource;
 use crate::platform::PlatformDetector;
 use crate::recording::RecordingManager;
+use crate::search::SearchResultProvider;
 use crate::settings::{ModelManager, Settings, SettingsManager};
 use crate::transcription::{TranscriptionManager, TranscriptionSegment, TranscriptionStatus, WhisperKitProvider};
 use crate::wav::WavConverter;
@@ -313,8 +314,18 @@ pub async fn save_gem(
                 eprintln!("Knowledge file creation failed for gem {}: {}", saved_gem.id, e);
             }
         }
+        
+        // Update search index
+        if let Some(provider) = app_handle.try_state::<Arc<dyn SearchResultProvider>>() {
+            eprintln!("Search: Indexing new gem {} (save_gem)", saved_gem.id);
+            if let Err(e) = provider.index_gem(&saved_gem.id).await {
+                eprintln!("Search: Failed to index gem {}: {}", saved_gem.id, e);
+            } else {
+                eprintln!("Search: Index request sent for gem {} (save_gem)", saved_gem.id);
+            }
+        }
     }
-    
+
     result
 }
 
@@ -385,87 +396,6 @@ pub async fn list_gems(
     gem_store.list(limit.unwrap_or(50), offset.unwrap_or(0)).await
 }
 
-/// Search gems by keyword
-///
-/// This command searches gems using full-text search (FTS5) on title, description,
-/// and content fields. Results are ranked by relevance. Empty queries return the
-/// same results as list_gems.
-///
-/// # Arguments
-///
-/// * `query` - Search query string (supports FTS5 syntax)
-/// * `limit` - Optional maximum number of results to return (default: 50)
-/// * `gem_store` - Managed state containing the GemStore trait object
-///
-/// # Returns
-///
-/// * `Ok(Vec<GemPreview>)` - Array of gem previews ranked by relevance
-/// * `Err(String)` - Error message if search fails
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - The GemStore search operation fails
-/// - Database connection issues occur
-/// - FTS5 query syntax is invalid
-///
-/// # Examples
-///
-/// ```typescript
-/// import { invoke } from '@tauri-apps/api/core';
-///
-/// interface GemPreview {
-///   id: string;
-///   source_type: string;
-///   source_url: string;
-///   domain: string;
-///   title: string;
-///   author?: string;
-///   description?: string;
-///   content_preview?: string;  // Truncated to 200 characters
-///   captured_at: string;
-/// }
-///
-/// // Basic keyword search
-/// try {
-///   const gems: GemPreview[] = await invoke('search_gems', {
-///     query: 'rust async'
-///   });
-///   console.log(`Found ${gems.length} gems matching "rust async"`);
-/// } catch (error) {
-///   console.error(`Failed to search gems: ${error}`);
-/// }
-///
-/// // Search with custom limit
-/// try {
-///   const gems: GemPreview[] = await invoke('search_gems', {
-///     query: 'OAuth token',
-///     limit: 20
-///   });
-///   console.log(`Top 20 results for "OAuth token"`);
-/// } catch (error) {
-///   console.error(`Failed to search gems: ${error}`);
-/// }
-///
-/// // Empty query returns all gems (same as list_gems)
-/// try {
-///   const gems: GemPreview[] = await invoke('search_gems', {
-///     query: ''
-///   });
-///   console.log(`All gems: ${gems.length}`);
-/// } catch (error) {
-///   console.error(`Failed to search gems: ${error}`);
-/// }
-/// ```
-#[tauri::command]
-pub async fn search_gems(
-    query: String,
-    limit: Option<usize>,
-    gem_store: State<'_, Arc<dyn GemStore>>,
-) -> Result<Vec<GemPreview>, String> {
-    gem_store.search(&query, limit.unwrap_or(50)).await
-}
-
 /// Delete a gem by ID
 ///
 /// This command deletes a gem from the store by its unique identifier.
@@ -517,6 +447,16 @@ pub async fn delete_gem(
         }
     }
     
+    // Remove from search index
+    if let Some(provider) = app_handle.try_state::<Arc<dyn SearchResultProvider>>() {
+        eprintln!("Search: Removing gem {} from index (delete_gem)", id);
+        if let Err(e) = provider.remove_gem(&id).await {
+            eprintln!("Search: Failed to remove gem {}: {}", id, e);
+        } else {
+            eprintln!("Search: Remove request sent for gem {} (delete_gem)", id);
+        }
+    }
+
     Ok(())
 }
 
@@ -698,8 +638,18 @@ pub async fn enrich_gem(
                 }
             }
         }
+        
+        // Update search index (enrichment changes tags/summary which improves search)
+        if let Some(provider) = app_handle.try_state::<Arc<dyn SearchResultProvider>>() {
+            eprintln!("Search: Re-indexing gem {} (enrich_gem)", enriched_gem.id);
+            if let Err(e) = provider.index_gem(&enriched_gem.id).await {
+                eprintln!("Search: Failed to re-index gem {}: {}", enriched_gem.id, e);
+            } else {
+                eprintln!("Search: Re-index request sent for gem {} (enrich_gem)", enriched_gem.id);
+            }
+        }
     }
-    
+
     result
 }
 
@@ -795,8 +745,18 @@ pub async fn transcribe_gem(
                 eprintln!("Knowledge file update failed: {}", e);
             }
         }
+        
+        // Update search index (transcript changes searchable content)
+        if let Some(provider) = app_handle.try_state::<Arc<dyn SearchResultProvider>>() {
+            eprintln!("Search: Re-indexing gem {} (transcribe_gem)", gem.id);
+            if let Err(e) = provider.index_gem(&gem.id).await {
+                eprintln!("Search: Failed to re-index gem {}: {}", gem.id, e);
+            } else {
+                eprintln!("Search: Re-index request sent for gem {} (transcribe_gem)", gem.id);
+            }
+        }
     }
-    
+
     result
 }
 

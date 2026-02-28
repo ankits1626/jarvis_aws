@@ -2069,6 +2069,7 @@ dependencies = [
  "dashmap",
  "dirs 5.0.1",
  "futures-util",
+ "libc",
  "nix",
  "ort",
  "ort-sys",

@@ -235,6 +235,14 @@ export interface CoPilotSettings {
   agent_logging: boolean;
 }
 
+/** Search settings matching Rust SearchSettings struct */
+export interface SearchSettings {
+  /** Whether semantic search (QMD) is enabled */
+  semantic_search_enabled: boolean;
+  /** Minimum relevance score (0-100) for semantic search results. Default: 75 */
+  semantic_search_accuracy: number;
+}
+
 /** Main settings structure matching Rust Settings struct */
 export interface Settings {
   /** Transcription-specific settings */
@@ -245,6 +253,9 @@ export interface Settings {
   
   /** Co-Pilot agent settings */
   copilot: CoPilotSettings;
+  
+  /** Search settings (semantic search via QMD) */
+  search: SearchSettings;
 }
 
 /** Model status enum matching Rust ModelStatus */
@@ -548,6 +559,93 @@ export interface GemPreview {
   
   /** Language detected by MLX Omni during transcription (ISO 639-1 code) */
   transcript_language: string | null;
+}
+
+/** Match type for search results */
+export type MatchType = 'Keyword' | 'Semantic' | 'Hybrid';
+
+/** Search result with gem metadata matching Rust GemSearchResult struct */
+export interface GemSearchResult {
+  /** Relevance score (0.0 to 1.0) */
+  score: number;
+  
+  /** Matched text chunk from the document */
+  matched_chunk: string;
+  
+  /** Type of match (Keyword, Semantic, or Hybrid) */
+  match_type: MatchType;
+  
+  /** Unique identifier (UUID v4) */
+  id: string;
+  
+  /** Source classification (YouTube, Article, Email, Chat, etc.) */
+  source_type: string;
+  
+  /** Original URL (unique constraint) */
+  source_url: string;
+  
+  /** Domain extracted from URL (e.g., "youtube.com", "medium.com") */
+  domain: string;
+  
+  /** Page/video/article title */
+  title: string;
+  
+  /** Author/channel name (optional) */
+  author: string | null;
+  
+  /** Short description or summary (optional) */
+  description: string | null;
+  
+  /** ISO 8601 timestamp when gem was captured */
+  captured_at: string;
+  
+  /** AI-generated topic tags (1-5 tags, extracted from ai_enrichment) */
+  tags: string[] | null;
+  
+  /** AI-generated one-sentence summary (extracted from ai_enrichment) */
+  summary: string | null;
+  
+  /** Source of enrichment, e.g. "mlx / qwen3-8b-4bit" (extracted from ai_enrichment) */
+  enrichment_source?: string | null;
+  
+  /** Language detected by MLX Omni during transcription (ISO 639-1 code) */
+  transcript_language?: string | null;
+  
+  /** Content truncated to 200 characters */
+  content_preview?: string | null;
+}
+
+/** QMD setup result matching Rust QmdSetupResult struct */
+export interface QmdSetupResult {
+  /** Whether setup completed successfully */
+  success: boolean;
+  
+  /** Node.js version detected */
+  node_version?: string;
+  
+  /** QMD version installed */
+  qmd_version?: string;
+  
+  /** Number of documents indexed */
+  docs_indexed?: number;
+  
+  /** Error message if setup failed */
+  error?: string;
+}
+
+/** Setup progress event matching Rust SetupProgressEvent struct */
+export interface SetupProgressEvent {
+  /** Current step number */
+  step: number;
+  
+  /** Total number of steps */
+  total: number;
+  
+  /** Description of current step */
+  description: string;
+  
+  /** Status of current step (in_progress, completed, failed) */
+  status: string;
 }
 
 /**

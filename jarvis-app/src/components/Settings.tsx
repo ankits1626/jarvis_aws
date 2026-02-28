@@ -16,6 +16,9 @@ import type {
   WhisperKitStatus,
   MlxDiagnostics,
   MlxVenvProgressEvent,
+  AvailabilityResult,
+  QmdSetupResult,
+  SetupProgressEvent,
 } from '../state/types';
 
 interface BrowserSettings {
@@ -40,18 +43,27 @@ export function Settings({ onClose }: SettingsProps) {
   const [venvSetupPhase, setVenvSetupPhase] = useState<string | null>(null);
   const [venvSetupError, setVenvSetupError] = useState<string | null>(null);
 
+  // Semantic search state
+  const [searchAvailability, setSearchAvailability] = useState<AvailabilityResult | null>(null);
+  const [searchSetupInProgress, setSearchSetupInProgress] = useState(false);
+  const [searchSetupSteps, setSearchSetupSteps] = useState<SetupProgressEvent[]>([]);
+  const [searchSetupError, setSearchSetupError] = useState<string | null>(null);
+  const [searchSetupResult, setSearchSetupResult] = useState<QmdSetupResult | null>(null);
+  const [rebuildingIndex, setRebuildingIndex] = useState(false);
+
   // Load settings and models on mount
   useEffect(() => {
     const loadData = async () => {
       try {
         setLoading(true);
-        const [settingsData, browserSettingsData, modelsData, whisperKitModelsData, whisperKitStatusData, llmModelsData] = await Promise.all([
+        const [settingsData, browserSettingsData, modelsData, whisperKitModelsData, whisperKitStatusData, llmModelsData, searchAvailabilityData] = await Promise.all([
           invoke<Settings>('get_settings'),
           invoke<BrowserSettings>('get_browser_settings'),
           invoke<ModelInfo[]>('list_models'),
           invoke<ModelInfo[]>('list_whisperkit_models'),
           invoke<WhisperKitStatus>('check_whisperkit_status'),
           invoke<LlmModelInfo[]>('list_llm_models'),
+          invoke<AvailabilityResult>('check_search_availability'),
         ]);
         setSettings(settingsData);
         setBrowserSettings(browserSettingsData);
@@ -59,6 +71,7 @@ export function Settings({ onClose }: SettingsProps) {
         setWhisperKitModels(whisperKitModelsData);
         setWhisperKitStatus(whisperKitStatusData);
         setLlmModels(llmModelsData);
+        setSearchAvailability(searchAvailabilityData);
         setError(null);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -229,6 +242,27 @@ export function Settings({ onClose }: SettingsProps) {
       unlistenProgress.then((fn) => fn());
       unlistenComplete.then((fn) => fn());
       unlistenError.then((fn) => fn());
+    };
+  }, []);
+
+  // Listen for semantic search setup events
+  useEffect(() => {
+    const unlisten = listen<SetupProgressEvent>('semantic-search-setup', (event) => {
+      const step = event.payload;
+      setSearchSetupSteps(prev => {
+        // Replace existing step or add new one
+        const existing = prev.findIndex(s => s.step === step.step);
+        if (existing >= 0) {
+          const updated = [...prev];
+          updated[existing] = step;
+          return updated;
+        }
+        return [...prev, step];
+      });
+    });
+
+    return () => {
+      unlisten.then(fn => fn());
     };
   }, []);
 
@@ -491,6 +525,85 @@ export function Settings({ onClose }: SettingsProps) {
         },
       };
       await invoke('update_settings', { settings: updatedSettings });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  // ── Semantic Search handlers ──
+  const handleSetupSemanticSearch = async () => {
+    setSearchSetupInProgress(true);
+    setSearchSetupSteps([]);
+    setSearchSetupError(null);
+    setSearchSetupResult(null);
+
+    try {
+      const result = await invoke<QmdSetupResult>('setup_semantic_search');
+      setSearchSetupResult(result);
+      
+      if (result.success) {
+        // Refresh availability
+        const availability = await invoke<AvailabilityResult>('check_search_availability');
+        setSearchAvailability(availability);
+        
+        // Refresh settings (semantic_search_enabled is now true)
+        const updatedSettings = await invoke<Settings>('get_settings');
+        setSettings(updatedSettings);
+      } else {
+        setSearchSetupError(result.error || 'Setup failed');
+      }
+    } catch (err) {
+      setSearchSetupError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSearchSetupInProgress(false);
+    }
+  };
+
+  const handleDisableSemanticSearch = async () => {
+    if (!settings) return;
+
+    try {
+      const updatedSettings = {
+        ...settings,
+        search: {
+          ...settings.search,
+          semantic_search_enabled: false,
+        },
+      };
+      await invoke('update_settings', { settings: updatedSettings });
+      setSettings(updatedSettings);
+      setSearchAvailability({ available: true, reason: undefined });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleRebuildIndex = async () => {
+    setRebuildingIndex(true);
+    try {
+      await invoke<number>('rebuild_search_index');
+      setRebuildingIndex(false);
+      // Brief success feedback — could use a toast, but inline message is simpler
+      setSearchSetupError(null);
+    } catch (err) {
+      setRebuildingIndex(false);
+      setSearchSetupError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleSearchAccuracyChange = async (value: number) => {
+    if (!settings) return;
+    const clamped = Math.max(0, Math.min(100, value));
+    try {
+      const updatedSettings = {
+        ...settings,
+        search: {
+          ...settings.search,
+          semantic_search_accuracy: clamped,
+        },
+      };
+      await invoke('update_settings', { settings: updatedSettings });
+      setSettings(updatedSettings);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -1072,6 +1185,209 @@ export function Settings({ onClose }: SettingsProps) {
               Write detailed prompt/response logs for debugging and quality tuning
             </p>
           </div>
+        </section>
+
+        <section className="settings-section">
+          <h3>Semantic Search</h3>
+          
+          {/* Not configured state */}
+          {!settings.search.semantic_search_enabled && !searchSetupInProgress && (
+            <>
+              <div className="info-banner" style={{
+                padding: '12px',
+                marginBottom: '16px',
+                backgroundColor: '#d1ecf1',
+                border: '1px solid #bee5eb',
+                borderRadius: '4px',
+                color: '#0c5460'
+              }}>
+                <strong>Not configured</strong>
+                <p style={{ margin: '8px 0 0 0', fontSize: '13px' }}>
+                  Semantic search finds gems by meaning, not just keywords. For example, searching 
+                  "container orchestration" can find a gem titled "ECS vs EKS comparison" even without exact keyword matches.
+                </p>
+                <p style={{ margin: '4px 0 0 0', fontSize: '12px', opacity: 0.8 }}>
+                  Requires: Node.js 22+, ~2GB disk space for search models. Setup takes 2-5 minutes.
+                </p>
+                <div style={{ marginTop: '12px' }}>
+                  <button
+                    onClick={handleSetupSemanticSearch}
+                    style={{
+                      padding: '8px 20px',
+                      backgroundColor: '#0c5460',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                    }}
+                  >
+                    Enable Semantic Search
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Setup in progress */}
+          {searchSetupInProgress && (
+            <div className="info-banner" style={{
+              padding: '12px',
+              marginBottom: '16px',
+              backgroundColor: '#fff3cd',
+              border: '1px solid #ffc107',
+              borderRadius: '4px',
+              color: '#856404'
+            }}>
+              <strong>Setting up semantic search...</strong>
+              <div style={{ marginTop: '8px' }}>
+                {searchSetupSteps.map(step => (
+                  <div key={step.step} style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '4px 0',
+                    fontSize: '13px',
+                  }}>
+                    <span style={{ width: '20px', textAlign: 'center' }}>
+                      {step.status === 'done' ? '✓' : step.status === 'failed' ? '✗' : '⟳'}
+                    </span>
+                    <span style={{
+                      opacity: step.status === 'done' ? 0.6 : 1,
+                      textDecoration: step.status === 'done' ? 'none' : 'none',
+                    }}>
+                      {step.description}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Setup error */}
+          {searchSetupError && !searchSetupInProgress && (
+            <div className="info-banner" style={{
+              padding: '12px',
+              marginBottom: '16px',
+              backgroundColor: '#f8d7da',
+              border: '1px solid #f5c6cb',
+              borderRadius: '4px',
+              color: '#721c24'
+            }}>
+              <strong>Setup failed:</strong> {searchSetupError}
+              <div style={{ marginTop: '8px' }}>
+                <button
+                  onClick={handleSetupSemanticSearch}
+                  style={{
+                    padding: '6px 16px',
+                    backgroundColor: '#721c24',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                  }}
+                >
+                  Retry
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Setup success (just completed) */}
+          {searchSetupResult?.success && !searchSetupInProgress && (
+            <div className="info-banner" style={{
+              padding: '12px',
+              marginBottom: '16px',
+              backgroundColor: '#d4edda',
+              border: '1px solid #c3e6cb',
+              borderRadius: '4px',
+              color: '#155724'
+            }}>
+              <strong>Semantic search enabled!</strong>
+              <p style={{ margin: '4px 0 0 0', fontSize: '13px' }}>
+                QMD {searchSetupResult.qmd_version} installed. Restart Jarvis to activate semantic search.
+              </p>
+            </div>
+          )}
+
+          {/* Configured and active */}
+          {settings.search.semantic_search_enabled && !searchSetupInProgress && !searchSetupResult?.success && (
+            <div className="info-banner" style={{
+              padding: '12px',
+              marginBottom: '16px',
+              backgroundColor: searchAvailability?.available ? '#d4edda' : '#fff3cd',
+              border: `1px solid ${searchAvailability?.available ? '#c3e6cb' : '#ffc107'}`,
+              borderRadius: '4px',
+              color: searchAvailability?.available ? '#155724' : '#856404',
+            }}>
+              <strong>
+                {searchAvailability?.available ? 'Semantic search active' : 'Semantic search enabled (not ready)'}
+              </strong>
+              {!searchAvailability?.available && searchAvailability?.reason && (
+                <p style={{ margin: '4px 0 0 0', fontSize: '13px' }}>
+                  {searchAvailability.reason}
+                </p>
+              )}
+              <div style={{ marginTop: '12px', display: 'flex', gap: '8px' }}>
+                <button
+                  onClick={handleRebuildIndex}
+                  disabled={rebuildingIndex || !searchAvailability?.available}
+                  style={{
+                    padding: '6px 16px',
+                    backgroundColor: searchAvailability?.available ? '#155724' : '#6c757d',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: searchAvailability?.available ? 'pointer' : 'not-allowed',
+                    fontSize: '13px',
+                    opacity: rebuildingIndex ? 0.7 : 1,
+                  }}
+                >
+                  {rebuildingIndex ? 'Rebuilding...' : 'Rebuild Index'}
+                </button>
+                <button
+                  onClick={handleDisableSemanticSearch}
+                  style={{
+                    padding: '6px 16px',
+                    backgroundColor: 'transparent',
+                    color: '#721c24',
+                    border: '1px solid #721c24',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                  }}
+                >
+                  Disable
+                </button>
+              </div>
+              <p style={{ margin: '8px 0 0 0', fontSize: '11px', opacity: 0.7 }}>
+                Disabling does not uninstall QMD or delete models. Restart required to take effect.
+              </p>
+              <div style={{ marginTop: '16px', borderTop: '1px solid #c3e6cb', paddingTop: '12px' }}>
+                <label style={{ fontSize: '13px', fontWeight: 600, display: 'block', marginBottom: '8px' }}>
+                  Minimum relevance: {settings.search.semantic_search_accuracy}%
+                </label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '11px', opacity: 0.7 }}>50%</span>
+                  <input
+                    type="range"
+                    min={50}
+                    max={100}
+                    step={5}
+                    value={settings.search.semantic_search_accuracy}
+                    onChange={(e) => handleSearchAccuracyChange(Number(e.target.value))}
+                    style={{ flex: 1 }}
+                  />
+                  <span style={{ fontSize: '11px', opacity: 0.7 }}>100%</span>
+                </div>
+                <p style={{ margin: '4px 0 0 0', fontSize: '11px', opacity: 0.7 }}>
+                  Results below this score are hidden. Lower = more results, higher = stricter. Restart required.
+                </p>
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="settings-section">
