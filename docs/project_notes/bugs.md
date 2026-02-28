@@ -46,3 +46,54 @@ This file logs bugs encountered and their solutions for future reference.
   }
   ```
 - **Prevention**: When adding new enum-like string values to settings structs, always check for validation functions that might need updating. Search for all references to the field name to find validation logic. Consider using Rust enums with `#[serde(rename)]` instead of raw strings to get compile-time validation.
+
+## React useEffect Ref Mutation Race Conditions
+
+**Date:** 2026-02-28
+
+**Issue:** When multiple useEffects share the same ref and mutate it, React runs effects in definition order, causing later effects to read stale values.
+
+**Example:** In CoPilotCardStack, Tasks 7 and 8 both used `previousRecordingState` ref:
+- Task 7 (line 118): Read ref, set hasCompleted, then mutate ref to 'idle'
+- Task 8 (line 135): Read ref → already 'idle' (mutated by Task 7) → condition fails → final summary card never created
+
+**Solution:** Merge related useEffects that share refs into a single useEffect to ensure atomic read-modify-write operations.
+
+**Prevention:** 
+- When multiple useEffects share a ref, consider merging them
+- Document ref mutation points with comments
+- Test state transitions that depend on ref comparisons
+
+
+## React useEffect Unnecessary Re-runs from State Dependencies
+
+**Date:** 2026-02-28
+
+**Issue:** Including state in useEffect dependency array when that state is only needed for reading (not for triggering the effect) causes wasteful re-executions.
+
+**Example:** Card creation effect included `cards` in deps because it was read for deduplication. Every time cards changed (from the effect itself or user interactions), the effect would re-run unnecessarily.
+
+**Solution:** Use functional setState pattern `setState(prev => ...)` to access latest state without adding it to dependency array. Add eslint-disable comment with explanation.
+
+**Pattern:**
+```typescript
+// BAD: cards in deps causes re-runs on every card change
+useEffect(() => {
+  const newCards = createCards(state, cards);
+  setCards([...newCards, ...cards]);
+}, [state, cards]);
+
+// GOOD: functional setState accesses latest cards without dep
+useEffect(() => {
+  setCards(prevCards => {
+    const newCards = createCards(state, prevCards);
+    return [...newCards, ...prevCards];
+  });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [state]); // Only state triggers the effect
+```
+
+**Prevention:**
+- Before adding state to deps, ask: "Does this state change trigger the effect, or is it just read?"
+- If just read, use functional setState pattern
+- Document with eslint-disable comment explaining why

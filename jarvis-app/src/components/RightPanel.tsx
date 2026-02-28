@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { TranscriptDisplay } from './TranscriptDisplay';
-import { CoPilotPanel } from './CoPilotPanel';
+// import { CoPilotPanel } from './CoPilotPanel'; // Replaced by CoPilotCardStack
+import { CoPilotCardStack } from './CoPilotCardStack';
 import RecordingDetailPanel from './RecordingDetailPanel';
 import GemDetailPanel from './GemDetailPanel';
 import { RecordingMetadata, TranscriptionSegment, RecordingTranscriptionState, CoPilotState, CoPilotStatus } from '../state/types';
@@ -89,10 +90,14 @@ export default function RightPanel({
     const isRecording = recordingState === 'recording';
     const hasTranscript = transcript.length > 0;
     const recordingCompleted = !isRecording && hasTranscript;
+    
+    // Keep Co-Pilot tab visible if copilot is enabled AND (recording OR has copilot data)
+    const hasCopilotData = copilotState && copilotState.cycle_metadata.cycle_number > 0;
+    const showCopilotTab = (copilotEnabled && isRecording) || !!hasCopilotData;
 
     if (isRecording || recordingCompleted) {
-      // Show tabs when copilot is enabled and recording
-      if (copilotEnabled && isRecording) {
+      // Show tabs when copilot is enabled and recording or has data
+      if (showCopilotTab) {
         return (
           <div className="right-panel" style={style}>
             <div className="record-tabs-view">
@@ -120,10 +125,12 @@ export default function RightPanel({
                     recordingFilename={currentRecording}
                   />
                 ) : (
-                  <CoPilotPanel
+                  <CoPilotCardStack
                     state={copilotState}
                     status={copilotStatus}
                     error={copilotError}
+                    recordingState={recordingState}
+                    cycleInterval={60} // TODO: Wire to settings.copilot.cycle_interval when settings state is available
                     onDismissQuestion={onDismissCopilotQuestion}
                   />
                 )}

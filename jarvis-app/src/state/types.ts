@@ -726,3 +726,81 @@ export interface CoPilotStatusEvent {
 export interface CoPilotErrorEvent {
   message: string;
 }
+
+/**
+ * Co-Pilot Card Stack UX types
+ * 
+ * These types define the structure for the card-based UX redesign
+ */
+
+/** Card type classification */
+export type CoPilotCardType = 'insight' | 'decision' | 'action_item' | 'question' | 'summary_update';
+
+/** Running status for the card stack component */
+export type CoPilotRunningStatus = 'idle' | 'recording' | 'processing' | 'complete';
+
+/** Individual card in the card stack */
+export interface CoPilotCard {
+  /** Unique identifier: "cycle-{N}-{type}-{index}" */
+  id: string;
+  
+  /** Card type classification */
+  type: CoPilotCardType;
+  
+  /** Short title extracted from body (max 60 chars) */
+  title: string;
+  
+  /** Full insight text */
+  body: string;
+  
+  /** Cycle number that produced this card */
+  cycle: number;
+  
+  /** Unix timestamp when card was created */
+  timestamp: number;
+  
+  /** Whether card is currently expanded */
+  isExpanded: boolean;
+  
+  /** Whether card is new (true until auto-collapse or user interaction) */
+  isNew: boolean;
+}
+
+/** Final summary card displayed when recording stops */
+export interface FinalSummaryCard {
+  /** Final running summary text */
+  summary: string;
+  
+  /** Accumulated key points */
+  keyTakeaways: string[];
+  
+  /** Accumulated action items */
+  actionItems: string[];
+  
+  /** Accumulated decisions */
+  decisions: string[];
+  
+  /** Accumulated open questions */
+  openQuestions: string[];
+}
+
+/** Component state for CoPilotCardStack */
+export interface CoPilotCardStackState {
+  /** All cards created from CoPilotState updates */
+  cards: CoPilotCard[];
+  
+  /** Current running status */
+  runningStatus: CoPilotRunningStatus;
+  
+  /** Current cycle number */
+  currentCycle: number;
+  
+  /** Seconds until next cycle */
+  nextCycleIn: number;
+  
+  /** Total audio analyzed in seconds */
+  totalAudioAnalyzed: number;
+  
+  /** Final summary card (null until recording stops) */
+  finalSummaryCard: FinalSummaryCard | null;
+}

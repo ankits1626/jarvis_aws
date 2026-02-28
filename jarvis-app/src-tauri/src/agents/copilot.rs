@@ -119,7 +119,8 @@ impl Default for CoPilotState {
 /// Result of a single cycle execution (for logging purposes)
 struct CycleExecutionResult {
     audio_duration: u64,
-    response_summary: String, // Brief summary of response for logging
+    prompt_text: String,
+    raw_cycle_result: crate::intelligence::provider::CoPilotCycleResult,
 }
 
 /// Run the Co-Pilot agent cycle loop
@@ -212,8 +213,9 @@ async fn run_cycle_loop(
                         &audio_end,
                         exec_result.audio_duration,
                         settings.audio_overlap,
-                        "[Prompt generated in Python sidecar]",
-                        &exec_result.response_summary,
+                        &exec_result.prompt_text,
+                        &exec_result.raw_cycle_result,
+                        &*state_guard,
                         cycle_duration.as_secs_f64(),
                         "success",
                     ).await;
@@ -242,17 +244,11 @@ async fn run_cycle_loop(
                 
                 // Log cycle failure if enabled
                 if let Some(ref log_path) = log_path {
-                    let _ = CoPilotAgent::log_cycle(
+                    let _ = CoPilotAgent::log_cycle_error(
                         log_path,
                         cycle_number,
-                        "00:00",
-                        "00:00",
-                        0,
-                        settings.audio_overlap,
-                        "[N/A — error occurred before prompt]",
                         &error,
                         cycle_duration.as_secs_f64(),
-                        "error",
                     ).await;
                 }
                 
@@ -345,6 +341,35 @@ async fn run_single_cycle(
         }
     };
     
+    // Reconstruct prompt text for logging (mirrors Python sidecar logic)
+    let prompt_text = if context.is_empty() {
+        "This is the start of a conversation. Analyze the audio and provide:\n\
+         1. What was discussed\n\
+         2. Summary of the conversation\n\
+         3. Key points mentioned\n\
+         4. Any decisions made\n\
+         5. Action items identified\n\
+         6. Open questions raised\n\
+         7. Suggested questions to ask next (with reasons)\n\
+         8. Key concepts (technical terms, names, topics) with brief context\n\n\
+         Respond in JSON format.".to_string()
+    } else {
+        format!(
+            "Previous conversation summary:\n{}\n\n\
+             Analyze the new audio segment and provide:\n\
+             1. What new content was discussed\n\
+             2. Updated summary of the entire conversation so far\n\
+             3. Key points mentioned\n\
+             4. Any decisions made\n\
+             5. Action items identified\n\
+             6. Open questions raised\n\
+             7. Suggested questions to ask next (with reasons)\n\
+             8. Key concepts (technical terms, names, topics) with brief context\n\n\
+             Respond in JSON format.",
+            context
+        )
+    };
+
     // Call provider with timeout
     let analysis_result = tokio::time::timeout(
         std::time::Duration::from_secs(120),
@@ -362,20 +387,17 @@ async fn run_single_cycle(
     
     // Calculate audio duration
     let audio_duration = settings.cycle_interval + settings.audio_overlap;
-    
-    // Create response summary for logging (truncate if too long)
-    let response_summary = if cycle_result.updated_summary.len() > 200 {
-        format!("{}...", &cycle_result.updated_summary[..200])
-    } else {
-        cycle_result.updated_summary.clone()
-    };
-    
+
+    // Clone the full result for logging before state update consumes it
+    let raw_cycle_result = cycle_result.clone();
+
     // Update state using the update_state_internal helper
     update_state_internal(state, cycle_result, audio_duration).await;
-    
+
     Ok(CycleExecutionResult {
         audio_duration,
-        response_summary,
+        prompt_text,
+        raw_cycle_result,
     })
 }
 
@@ -602,7 +624,8 @@ impl CoPilotAgent {
     /// * `audio_duration` - Duration of audio chunk in seconds
     /// * `audio_overlap` - Overlap duration in seconds
     /// * `prompt` - The prompt sent to the model
-    /// * `response` - The JSON response from the model
+    /// * `raw_result` - The full parsed response from the model
+    /// * `processed_state` - The merged CoPilotState shown on the UI
     /// * `inference_time` - Time taken for inference in seconds
     /// * `status` - Status of the cycle ("success", "error", "skipped")
     async fn log_cycle(
@@ -613,13 +636,46 @@ impl CoPilotAgent {
         audio_duration: u64,
         audio_overlap: u64,
         prompt: &str,
-        response: &str,
+        raw_result: &crate::intelligence::provider::CoPilotCycleResult,
+        processed_state: &CoPilotState,
         inference_time: f64,
         status: &str,
     ) -> Result<(), String> {
         use tokio::fs::OpenOptions;
         use tokio::io::AsyncWriteExt;
-        
+
+        // Serialize raw response
+        let raw_json = serde_json::to_string_pretty(raw_result)
+            .unwrap_or_else(|e| format!("(serialization error: {})", e));
+
+        // Build processed state summary (what the UI shows)
+        let processed_summary = format!(
+            "**Running Summary:** {}\n\n\
+             **Key Points ({}):**\n{}\n\n\
+             **Decisions ({}):**\n{}\n\n\
+             **Action Items ({}):**\n{}\n\n\
+             **Open Questions ({}):**\n{}\n\n\
+             **Suggested Questions ({}):**\n{}\n\n\
+             **Key Concepts ({}):**\n{}",
+            processed_state.running_summary,
+            processed_state.key_points.len(),
+            processed_state.key_points.iter().map(|p| format!("- {}", p)).collect::<Vec<_>>().join("\n"),
+            processed_state.decisions.len(),
+            processed_state.decisions.iter().map(|d| format!("- {}", d)).collect::<Vec<_>>().join("\n"),
+            processed_state.action_items.len(),
+            processed_state.action_items.iter().map(|a| format!("- {}", a)).collect::<Vec<_>>().join("\n"),
+            processed_state.open_questions.len(),
+            processed_state.open_questions.iter().map(|q| format!("- {}", q)).collect::<Vec<_>>().join("\n"),
+            processed_state.suggested_questions.len(),
+            processed_state.suggested_questions.iter()
+                .map(|q| format!("- {} _(reason: {})_", q.question, q.reason))
+                .collect::<Vec<_>>().join("\n"),
+            processed_state.key_concepts.len(),
+            processed_state.key_concepts.iter()
+                .map(|c| format!("- **{}** — {} (mentions: {})", c.term, c.context, c.mention_count))
+                .collect::<Vec<_>>().join("\n"),
+        );
+
         let entry = format!(
             r#"---
 
@@ -632,10 +688,13 @@ impl CoPilotAgent {
 ### Prompt
 {}
 
-### Response
+### Raw Model Response
 ```json
 {}
 ```
+
+### Processed State (UI)
+{}
 
 "#,
             cycle_number,
@@ -648,23 +707,67 @@ impl CoPilotAgent {
             inference_time,
             status,
             prompt,
-            response
+            raw_json,
+            processed_summary
         );
-        
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(log_path)
             .await
             .map_err(|e| format!("Failed to open log file: {}", e))?;
-        
+
         file.write_all(entry.as_bytes())
             .await
             .map_err(|e| format!("Failed to write to log file: {}", e))?;
-        
+
         Ok(())
     }
-    
+
+    /// Log a failed cycle to the agent log file
+    async fn log_cycle_error(
+        log_path: &Path,
+        cycle_number: u32,
+        error: &str,
+        inference_time: f64,
+    ) -> Result<(), String> {
+        use tokio::fs::OpenOptions;
+        use tokio::io::AsyncWriteExt;
+
+        let entry = format!(
+            r#"---
+
+## Cycle {} — ERROR
+
+**Inference time:** {:.1}s
+**Status:** error
+
+### Error
+```
+{}
+```
+
+"#,
+            cycle_number,
+            inference_time,
+            error
+        );
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+            .await
+            .map_err(|e| format!("Failed to open log file: {}", e))?;
+
+        file.write_all(entry.as_bytes())
+            .await
+            .map_err(|e| format!("Failed to write to log file: {}", e))?;
+
+        Ok(())
+    }
+
     /// Write summary section to log file
     /// 
     /// Appends a summary table with cycle statistics when the agent stops.

@@ -35,7 +35,20 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 - **Delete gems** with confirmation
 - **Export** gists to markdown files
 
-### 4. AI Enrichment (On-Device)
+### 4. Co-Pilot Agent (Live Recording Intelligence)
+- **Real-time AI analysis** during recording — feeds raw audio chunks directly to Qwen Omni (multimodal LLM) every 60s
+- Produces a **rolling summary** of the conversation updated each cycle
+- Extracts **key points**, **decisions**, **action items**, and **open questions** with deduplication across cycles
+- Generates **suggested questions** (up to 5) contextual to the current discussion
+- Identifies **key concepts** with mention counts
+- Self-compressing context: each cycle's summary becomes the next cycle's input, so context never grows unbounded
+- Configurable cycle interval (30–120s) and audio overlap (0–15s) for sentence boundary bridging
+- Full prompt/response **agent logging** to markdown files for debugging and quality tuning
+- Co-Pilot data saved into gems alongside transcript and AI enrichment
+- Toggle on/off independently from recording — user controls when AI runs
+- Provider-agnostic: calls `IntelProvider::copilot_analyze()` trait, not a specific backend
+
+### 5. AI Enrichment (On-Device)
 - **Auto-tagging**: Generate 3–5 topic tags from content
 - **Auto-summarization**: One-sentence summary
 - **Transcript generation**: High-quality post-recording transcript (MLX Omni)
@@ -43,14 +56,14 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 - **Manual re-enrichment**: Enrich any existing gem on demand
 - Pluggable provider architecture: **MLX** (local LLM) → **IntelligenceKit** (Apple Foundation Models) → **NoOp** (graceful fallback)
 
-### 5. Model Management
+### 6. Model Management
 - **Whisper models**: Download/delete OpenAI Whisper models from Hugging Face
 - **WhisperKit models**: Download/manage Apple WhisperKit models
 - **LLM models**: Download/delete/switch MLX-compatible LLMs (Qwen3, etc.)
 - Real-time download progress tracking
 - Switch active LLM model at runtime
 
-### 6. Settings & Configuration
+### 7. Settings & Configuration
 - Transcription engine selection (whisper-rs / whisperkit / mlx-omni)
 - VAD enable/disable with threshold tuning
 - Whisper model selection
@@ -58,6 +71,7 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 - AI provider selection (MLX vs IntelligenceKit)
 - Python path configuration for MLX
 - Active LLM model switching
+- Co-Pilot settings: auto-start toggle, cycle interval, audio overlap, agent logging
 - MLX virtual environment setup/reset with diagnostics
 
 ---
@@ -100,6 +114,7 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 | Whisper models | `~/Library/Application Support/com.jarvis.app/models/` |
 | LLM models | `~/Library/Application Support/com.jarvis.app/llm_models/` |
 | WhisperKit models | `~/.cache/huggingface/hub/` |
+| Co-Pilot agent logs | `~/Library/Application Support/com.jarvis.app/agent_logs/` |
 | Settings | `~/.jarvis/settings.json` |
 | Gist exports | `~/.jarvis/gists/` |
 | MLX venv | `~/.jarvis/mlx_venv/` |
@@ -108,11 +123,12 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 
 ## Backend Commands (Tauri RPC)
 
-**45+ registered commands** across these domains:
+**50+ registered commands** across these domains:
 
 - **Recording** (5): start, stop, list, delete, convert to WAV
 - **Transcription** (4): get transcript, status, transcribe recording, transcribe gem
 - **Gems** (10): save, list, search, filter by tag, get, delete, enrich, save recording gem, check recording gem, batch check
+- **Co-Pilot** (4): start, stop, get state, dismiss question
 - **AI/Intelligence** (9): availability check, MLX dependency check, venv setup/reset, MLX status, list/download/cancel/delete/switch LLM models
 - **Model Management** (7): list/download/cancel/delete Whisper models, WhisperKit status/list/download
 - **Browser** (10): start/stop observer, status, settings, list tabs, fetch YouTube gist, prepare gist, prepare with Claude, export, capture Claude, check Claude panel, accessibility permission

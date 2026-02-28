@@ -193,10 +193,10 @@ function App() {
       if (copilotEnabled && state.recordingState !== 'recording') {
         console.log('[App] Recording stopped, automatically stopping Co-Pilot agent');
         try {
-          await invoke('stop_copilot');
+          const finalState = await invoke<CoPilotState>('stop_copilot');
+          setCopilotState(finalState); // Preserve final state for display
           setCopilotEnabled(false);
           setCopilotStatus('stopped');
-          setCopilotState(null);
           setCopilotError(null);
         } catch (error) {
           console.error('[App] Failed to stop Co-Pilot agent:', error);
