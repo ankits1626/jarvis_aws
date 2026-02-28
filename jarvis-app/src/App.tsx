@@ -69,6 +69,10 @@ function App() {
   const [copilotState, setCopilotState] = useState<CoPilotState | null>(null);
   const [copilotError, setCopilotError] = useState<string | null>(null);
 
+  // Chat state
+  const [chatSessionId, setChatSessionId] = useState<string | null>(null);
+  const [chatStatus, setChatStatus] = useState<'preparing' | 'ready' | 'error'>('ready');
+
   // Load recordings on mount (Requirement 1.2)
   useEffect(() => {
     const loadRecordings = async () => {
@@ -234,21 +238,44 @@ function App() {
    * Requirements: 4.3, 5.1, 5.2, 5.3
    */
   const handleSelectRecording = async (filename: string) => {
+    // End chat session from previously selected recording
+    if (chatSessionId) {
+      try {
+        await invoke('chat_end_session', { sessionId: chatSessionId });
+      } catch (_) { /* ignore cleanup errors */ }
+      setChatSessionId(null);
+      setChatStatus('ready');
+    }
+
     try {
       // Convert PCM to WAV (Requirement 5.1, 5.2)
       const wavBytes = await invoke<number[]>("convert_to_wav", { filename });
-      
+
       // Create blob URL for playback (Requirement 5.3)
       const blob = new Blob([new Uint8Array(wavBytes)], { type: "audio/wav" });
       const url = URL.createObjectURL(blob);
-      
+
       // Clean up old URL
       if (audioUrl) {
         URL.revokeObjectURL(audioUrl);
       }
-      
+
       setAudioUrl(url);
       selectRecording(filename);
+
+      // Load saved transcript from disk if it exists
+      try {
+        const saved = await invoke<string | null>('get_saved_transcript', { recordingFilename: filename });
+        if (saved) {
+          setRecordingStates(prev => ({
+            ...prev,
+            [filename]: {
+              ...prev[filename],
+              transcript: { transcript: saved, language: '' },
+            }
+          }));
+        }
+      } catch (_) { /* non-critical */ }
     } catch (error) {
       console.error("Failed to convert recording:", error);
     }
@@ -257,12 +284,23 @@ function App() {
   /**
    * Handle closing the audio player
    */
-  const handleClosePlayer = () => {
+  const handleClosePlayer = async () => {
     if (audioUrl) {
       URL.revokeObjectURL(audioUrl);
       setAudioUrl(null);
     }
     deselectRecording();
+    
+    // End chat session if active
+    if (chatSessionId) {
+      try {
+        await invoke('chat_end_session', { sessionId: chatSessionId });
+      } catch (error) {
+        console.error('Failed to end chat session:', error);
+      }
+      setChatSessionId(null);
+      setChatStatus('ready');
+    }
   };
 
   /**
@@ -496,9 +534,48 @@ function App() {
   };
   
   /**
+   * Handle start chat with recording
+   */
+  const handleStartChat = async (filename: string) => {
+    // End any existing chat session first (always start fresh)
+    if (chatSessionId) {
+      try {
+        await invoke('chat_end_session', { sessionId: chatSessionId });
+      } catch (_) { /* ignore cleanup errors */ }
+      setChatSessionId(null);
+    }
+
+    try {
+      const result = await invoke<{ session_id: string; needs_preparation: boolean }>('chat_with_recording', {
+        recordingFilename: filename
+      });
+
+      // Show ChatPanel immediately
+      setChatSessionId(result.session_id);
+      // If transcript exists → ready; if not → preparing (background task running)
+      setChatStatus(result.needs_preparation ? 'preparing' : 'ready');
+    } catch (error) {
+      console.error('Failed to start chat:', error);
+      setToastError(`Failed to start chat: ${error}`);
+      setChatStatus('error');
+    }
+  };
+  
+  /**
    * Handle navigation change
    */
-  const handleNavChange = (nav: ActiveNav) => {
+  const handleNavChange = async (nav: ActiveNav) => {
+    // End chat session when navigating away from recordings
+    if (activeNav === 'recordings' && nav !== 'recordings' && chatSessionId) {
+      try {
+        await invoke('chat_end_session', { sessionId: chatSessionId });
+      } catch (error) {
+        console.error('Failed to end chat session:', error);
+      }
+      setChatSessionId(null);
+      setChatStatus('ready');
+    }
+    
     setActiveNav(nav);
     
     // Clear YouTube notification when navigating to YouTube
@@ -791,6 +868,9 @@ function App() {
         copilotState={copilotState}
         copilotError={copilotError}
         onDismissCopilotQuestion={handleDismissCopilotQuestion}
+        onStartChat={handleStartChat}
+        chatSessionId={chatSessionId}
+        chatStatus={chatStatus}
         style={{ width: rightPanelWidth }}
       />
 

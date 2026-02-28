@@ -83,6 +83,14 @@ pub fn run() {
                 eprintln!("Intelligence: AI enrichment unavailable - {}", 
                     availability.reason.unwrap_or_else(|| "Unknown reason".to_string()));
             }
+            
+            // Create IntelQueue for serialized provider access
+            // Must run inside block_on so tokio::spawn in IntelQueue::new() has a runtime context
+            let intel_queue = tauri::async_runtime::block_on(async {
+                intelligence::IntelQueue::new(intel_provider.clone())
+            });
+            app.manage(intel_queue);
+            
             app.manage(intel_provider);
             
             // Wrap MlxProvider in Arc<tokio::sync::Mutex<>> for Phase 5 model switching
@@ -193,6 +201,9 @@ pub fn run() {
             // Initialize Co-Pilot agent state (None = not running)
             app.manage(Arc::new(tokio::sync::Mutex::new(None::<agents::copilot::CoPilotAgent>)));
             
+            // Initialize Chatbot state
+            app.manage(tokio::sync::Mutex::new(agents::chatbot::Chatbot::new()));
+            
             // Initialize ShortcutManager and register shortcuts
             let shortcut_manager = ShortcutManager::new(app.handle().clone());
             shortcut_manager.register_shortcuts()
@@ -286,6 +297,11 @@ pub fn run() {
             commands::stop_copilot,
             commands::get_copilot_state,
             commands::dismiss_copilot_question,
+            commands::chat_with_recording,
+            commands::chat_send_message,
+            commands::chat_get_history,
+            commands::chat_end_session,
+            commands::get_saved_transcript,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

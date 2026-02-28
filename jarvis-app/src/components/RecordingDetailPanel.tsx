@@ -7,6 +7,7 @@ interface RecordingDetailPanelProps {
   recordingState: RecordingTranscriptionState;
   onTranscribe: () => void;
   onSaveGem: () => void;
+  onStartChat: () => void;
   aiAvailable: boolean;
 }
 
@@ -17,6 +18,7 @@ export default function RecordingDetailPanel({
   recordingState,
   onTranscribe,
   onSaveGem,
+  onStartChat,
   aiAvailable
 }: RecordingDetailPanelProps) {
   const formatDate = (timestamp: number) => {
@@ -76,6 +78,14 @@ export default function RecordingDetailPanel({
             className="transcribe-button"
           >
             {recordingState.transcribing ? 'Transcribing...' : 'Transcribe'}
+          </button>
+          <button
+            onClick={onStartChat}
+            disabled={!aiAvailable}
+            className="chat-button"
+            title={!aiAvailable ? 'No model loaded' : 'Chat with this recording'}
+          >
+            Chat
           </button>
         </div>
       )}

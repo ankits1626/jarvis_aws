@@ -105,4 +105,24 @@ pub trait IntelProvider: Send + Sync {
     ) -> Result<CoPilotCycleResult, String> {
         Err("Co-Pilot analysis not supported by this provider".to_string())
     }
+    
+    /// Send a multi-turn conversation to the LLM and receive a text response
+    ///
+    /// Each tuple is (role, content) where role is "system", "user", or "assistant".
+    /// Default implementation returns error for providers that don't support chat.
+    ///
+    /// # Arguments
+    ///
+    /// * `messages` - Array of (role, content) tuples representing the conversation
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(String)` - The assistant's response text
+    /// * `Err(String)` - Error message if chat fails or is not supported
+    async fn chat(
+        &self,
+        _messages: &[(String, String)],
+    ) -> Result<String, String> {
+        Err("Chat not supported by this provider".to_string())
+    }
 }

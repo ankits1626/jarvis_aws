@@ -34,6 +34,8 @@ struct NdjsonCommand {
     capabilities: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     context: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    messages: Option<Vec<serde_json::Value>>,
 }
 
 /// NDJSON response structure from MLX sidecar
@@ -80,6 +82,9 @@ struct NdjsonResponse {
     suggested_questions: Option<Vec<serde_json::Value>>,
     #[serde(default)]
     key_concepts: Option<Vec<serde_json::Value>>,
+    // Chat response field
+    #[serde(default)]
+    response: Option<String>,
 }
 
 /// MLX provider state
@@ -337,6 +342,7 @@ impl MlxProvider {
             audio_path: None,
             capabilities: None,
             context: None,
+            messages: None,
         };
 
         let response = self.send_command(cmd, 15).await?;
@@ -378,6 +384,7 @@ impl MlxProvider {
             audio_path: None,
             capabilities: Some(capabilities),
             context: None,
+            messages: None,
         };
 
         let response = self.send_command(cmd, 60).await?;
@@ -466,6 +473,7 @@ impl MlxProvider {
             audio_path: None,
             capabilities: None,
             context: None,
+            messages: None,
         };
 
         // Try to send shutdown command (ignore errors)
@@ -496,6 +504,7 @@ impl MlxProvider {
             audio_path: None,
             capabilities: None,
             context: None,
+            messages: None,
         };
 
         let response = self.send_command(cmd, 60).await?;
@@ -528,6 +537,7 @@ impl MlxProvider {
             audio_path: None,
             capabilities: None,
             context: None,
+            messages: None,
         };
 
         let response = self.send_command(cmd, 60).await?;
@@ -566,6 +576,7 @@ impl MlxProvider {
             audio_path: Some(audio_path_str.clone()),
             capabilities: None,
             context: None,
+            messages: None,
         };
 
         // 600s (10 min) timeout for transcript generation — large audio files need time
@@ -608,6 +619,7 @@ impl MlxProvider {
             audio_path: Some(audio_path_str.clone()),
             capabilities: None,
             context: Some(context.to_string()),
+            messages: None,
         };
 
         // 120s timeout for Co-Pilot analysis (R11.2)
@@ -680,6 +692,55 @@ impl MlxProvider {
             suggested_questions,
             key_concepts,
         })
+    }
+    
+    /// Send a multi-turn conversation to the LLM and receive a text response.
+    ///
+    /// Uses a 120s timeout as specified in requirements.
+    async fn chat_internal(&self, messages: &[(String, String)]) -> Result<String, String> {
+        eprintln!("MLX: Starting chat with {} messages", messages.len());
+        
+        let cmd = NdjsonCommand {
+            command: "chat".to_string(),
+            model_path: None,
+            content: None,
+            repo_id: None,
+            destination: None,
+            audio_path: None,
+            capabilities: None,
+            context: None,
+            messages: Some(
+                messages
+                    .iter()
+                    .map(|(role, content)| {
+                        serde_json::json!({
+                            "role": role,
+                            "content": content
+                        })
+                    })
+                    .collect()
+            ),
+        };
+        
+        // 120s timeout for chat (as specified in requirements)
+        let response = self.send_command(cmd, 120).await
+            .map_err(|e| {
+                eprintln!("MLX: Chat failed: {}", e);
+                e
+            })?;
+        
+        if response.response_type == "error" {
+            let err = response.error.unwrap_or_else(|| "Chat failed".to_string());
+            eprintln!("MLX: Chat error: {}", err);
+            return Err(err);
+        }
+        
+        let response_text = response
+            .response
+            .ok_or_else(|| "No response field in chat result".to_string())?;
+        
+        eprintln!("MLX: Chat complete");
+        Ok(response_text)
     }
 }
 
@@ -788,5 +849,12 @@ impl IntelProvider for MlxProvider {
         context: &str,
     ) -> Result<super::provider::CoPilotCycleResult, String> {
         self.copilot_analyze_internal(audio_path, context).await
+    }
+    
+    async fn chat(
+        &self,
+        messages: &[(String, String)],
+    ) -> Result<String, String> {
+        self.chat_internal(messages).await
     }
 }

@@ -47,6 +47,16 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 - Co-Pilot data saved into gems alongside transcript and AI enrichment
 - Toggle on/off independently from recording — user controls when AI runs
 - Provider-agnostic: calls `IntelProvider::copilot_analyze()` trait, not a specific backend
+- **Card Stack UX** — each insight rendered as an individual animated card:
+  - Cards slide in from top with entrance animation + subtle pulse highlight
+  - Auto-collapse after timeout (5s for summaries, 8s for others), hover pauses timer
+  - Color-coded type badges: Insight (blue), Decision (green), Action (amber), Question (red), Summary (purple)
+  - Expand/collapse individual cards or bulk expand/collapse all
+  - State diffing engine (`createCardsFromStateDiff`) deduplicates across cycles — only new insights create cards
+  - **Session Summary Card** appears when recording stops — aggregates summary, key takeaways, action items, decisions, open questions
+  - Sticky footer shows cycle countdown, processing status, and session stats (cycles done, total audio analyzed)
+  - Co-Pilot tab persists after recording stops so accumulated intelligence remains accessible
+  - Notification dot on Co-Pilot tab when new data arrives while viewing transcript
 
 ### 5. AI Enrichment (On-Device)
 - **Auto-tagging**: Generate 3–5 topic tags from content
@@ -87,6 +97,8 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 - Dark theme with design token system (CSS custom properties)
 - Self-hosted Inter + JetBrains Mono fonts
 - Resizable right panel via drag handle
+- Tabbed right panel during recording: **Transcript** and **Co-Pilot** tabs with notification dot for unseen updates
+- Co-Pilot Card Stack with animated card entrance, auto-collapse timers, hover-to-pause, and keyboard-accessible expand/collapse
 - Notification badge on YouTube tab when video detected
 - Error toasts for runtime issues (MLX sidecar crashes)
 

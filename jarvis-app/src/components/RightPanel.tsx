@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { TranscriptDisplay } from './TranscriptDisplay';
 // import { CoPilotPanel } from './CoPilotPanel'; // Replaced by CoPilotCardStack
 import { CoPilotCardStack } from './CoPilotCardStack';
 import RecordingDetailPanel from './RecordingDetailPanel';
 import GemDetailPanel from './GemDetailPanel';
+import ChatPanel from './ChatPanel';
 import { RecordingMetadata, TranscriptionSegment, RecordingTranscriptionState, CoPilotState, CoPilotStatus } from '../state/types';
 
 type ActiveNav = 'record' | 'recordings' | 'gems' | 'youtube' | 'browser' | 'settings';
@@ -32,6 +33,9 @@ interface RightPanelProps {
   copilotState: CoPilotState | null;
   copilotError: string | null;
   onDismissCopilotQuestion: (index: number) => void;
+  onStartChat?: (filename: string) => void;
+  chatSessionId?: string | null;
+  chatStatus?: 'preparing' | 'ready' | 'error';
   style?: React.CSSProperties;
 }
 
@@ -59,10 +63,20 @@ export default function RightPanel({
   copilotState,
   copilotError,
   onDismissCopilotQuestion,
+  onStartChat,
+  chatSessionId,
+  chatStatus = 'ready',
   style
 }: RightPanelProps) {
-  const [activeTab, setActiveTab] = useState<'transcript' | 'copilot'>('transcript');
+  const [activeTab, setActiveTab] = useState<'transcript' | 'copilot' | 'chat'>('transcript');
   const [hasSeenCopilotUpdate, setHasSeenCopilotUpdate] = useState(false);
+
+  // Auto-switch to chat tab when a new session starts
+  useEffect(() => {
+    if (chatSessionId) {
+      setActiveTab('chat');
+    }
+  }, [chatSessionId]);
 
   // Show notification dot when copilot has new data and user is on transcript tab
   const showNotificationDot = copilotEnabled && 
@@ -72,7 +86,7 @@ export default function RightPanel({
     !hasSeenCopilotUpdate;
 
   // Clear notification when user switches to copilot tab
-  const handleTabChange = (tab: 'transcript' | 'copilot') => {
+  const handleTabChange = (tab: 'transcript' | 'copilot' | 'chat') => {
     setActiveTab(tab);
     if (tab === 'copilot') {
       setHasSeenCopilotUpdate(true);
@@ -174,6 +188,53 @@ export default function RightPanel({
           gemSaved: false
         };
 
+        // Show tabs when chat session is active
+        if (chatSessionId) {
+          return (
+            <div className="right-panel" style={style}>
+              <div className="record-tabs-view">
+                <div className="tab-buttons">
+                  <button
+                    className={`tab-button ${activeTab === 'transcript' ? 'active' : ''}`}
+                    onClick={() => handleTabChange('transcript')}
+                  >
+                    Details
+                  </button>
+                  <button
+                    className={`tab-button ${activeTab === 'chat' ? 'active' : ''}`}
+                    onClick={() => handleTabChange('chat')}
+                  >
+                    Chat
+                  </button>
+                </div>
+                <div className="tab-content">
+                  {activeTab === 'transcript' ? (
+                    <RecordingDetailPanel
+                      recording={recording}
+                      audioUrl={audioUrl}
+                      onClose={onClosePlayer}
+                      recordingState={recState}
+                      onTranscribe={() => onTranscribeRecording(selectedRecording)}
+                      onSaveGem={onSaveGem}
+                      onStartChat={() => onStartChat?.(selectedRecording)}
+                      aiAvailable={aiAvailable}
+                    />
+                  ) : (
+                    <ChatPanel
+                      sessionId={chatSessionId}
+                      recordingFilename={selectedRecording}
+                      status={chatStatus}
+                      preparingMessage="Generating transcript..."
+                      placeholder="Ask me anything about this recording."
+                    />
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        // Show detail panel only when no chat session
         return (
           <div className="right-panel" style={style}>
             <RecordingDetailPanel
@@ -183,6 +244,7 @@ export default function RightPanel({
               recordingState={recState}
               onTranscribe={() => onTranscribeRecording(selectedRecording)}
               onSaveGem={onSaveGem}
+              onStartChat={() => onStartChat?.(selectedRecording)}
               aiAvailable={aiAvailable}
             />
           </div>

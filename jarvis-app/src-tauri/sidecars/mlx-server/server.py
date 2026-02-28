@@ -196,29 +196,10 @@ def apply_runtime_patches():
         except Exception as e:
             print(f"MLX: Warning - failed to patch TokenizerWithAudio: {e}", file=sys.stderr, flush=True)
         
-        # Patch 5: 7B model conv weight layout detection and fix
-        try:
-            from mlx_lm_omni.models.qwen_omni import AudioEncoder
-            original_init = AudioEncoder.__init__
-            
-            def patched_init(self, config):
-                original_init(self, config)
-                # Auto-detect PyTorch layout mismatch in conv weights
-                # PyTorch: (out_channels, in_channels, kernel_size)
-                # MLX: (out_channels, kernel_size, in_channels)
-                # Check if conv1.weight has wrong layout (shape[1] != 3 for RGB input)
-                if hasattr(self, 'conv1') and hasattr(self.conv1, 'weight'):
-                    if self.conv1.weight.shape[1] != 3:
-                        # Wrong layout detected - swap axes 1 and 2
-                        self.conv1.weight = mx.swapaxes(self.conv1.weight, 1, 2)
-                        if hasattr(self, 'conv2') and hasattr(self.conv2, 'weight'):
-                            self.conv2.weight = mx.swapaxes(self.conv2.weight, 1, 2)
-                        print("MLX: Applied conv weight layout fix for 7B model", file=sys.stderr, flush=True)
-            
-            AudioEncoder.__init__ = patched_init
-            patches_applied.append("AudioEncoder.conv_layout")
-        except Exception as e:
-            print(f"MLX: Warning - failed to patch AudioEncoder: {e}", file=sys.stderr, flush=True)
+        # Patch 5: 7B model conv weight layout — handled in load_model() AFTER
+        # weights are loaded from disk. An __init__ patch cannot work because
+        # load() replaces weights after construction.
+        patches_applied.append("AudioEncoder.conv_layout (post-load)")
         
         print(f"MLX: Applied patches for mlx-lm-omni {omni_version}: {', '.join(patches_applied)}", 
               file=sys.stderr, flush=True)
@@ -279,6 +260,20 @@ class MLXServer:
                         "error": "mlx-lm-omni not installed. Install it to load multimodal models."
                     }
                 self.model, self.tokenizer = mlx_omni_load(model_path)
+
+                # Fix conv weight layout after loading (7B weights ship in PyTorch layout)
+                # PyTorch: (out_channels, in_channels, kernel_size)
+                # MLX:     (out_channels, kernel_size, in_channels)
+                # Must happen AFTER load() since __init__ sees default weights, not loaded ones.
+                try:
+                    at = self.model.thinker.audio_tower
+                    if hasattr(at, 'conv1') and at.conv1.weight.shape[1] != 3:
+                        at.conv1.weight = mx.swapaxes(at.conv1.weight, 1, 2)
+                        at.conv2.weight = mx.swapaxes(at.conv2.weight, 1, 2)
+                        print("MLX: Fixed conv weight layout (PyTorch → MLX) after load",
+                              file=sys.stderr, flush=True)
+                except Exception as e:
+                    print(f"MLX: Conv weight check skipped: {e}", file=sys.stderr, flush=True)
             else:
                 self.model, self.tokenizer = load(model_path)
 
@@ -396,6 +391,70 @@ Summary:"""
                 "error": str(e)
             }
     
+    def chat(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+        """Handle multi-turn chat conversation.
+        
+        Args:
+            messages: Array of {role, content} objects where role is "system", "user", or "assistant"
+            
+        Returns:
+            Dict with type, command, and response fields
+        """
+        if self.model is None:
+            return {
+                "type": "error",
+                "command": "chat",
+                "error": "No model loaded"
+            }
+        
+        if not messages:
+            return {
+                "type": "error",
+                "command": "chat",
+                "error": "No messages provided"
+            }
+        
+        try:
+            from mlx_lm.sample_utils import make_logits_processors, make_sampler
+
+            # Build conversation from messages array
+            conversation = [{"role": m["role"], "content": m["content"]} for m in messages]
+
+            # Apply chat template and generate
+            token_ids = self.tokenizer.apply_chat_template(
+                conversation,
+                add_generation_prompt=True
+            )
+
+            # Repetition penalty prevents degenerate looping responses
+            logits_processors = make_logits_processors(
+                repetition_penalty=1.2,
+                repetition_context_size=64,
+            )
+            sampler = make_sampler(temp=0.7, top_p=0.9)
+
+            response_text = mlx_lm_generate(
+                self.model,
+                self.tokenizer,
+                prompt=token_ids,
+                max_tokens=512,
+                logits_processors=logits_processors,
+                sampler=sampler,
+                verbose=False
+            )
+
+            return {
+                "type": "response",
+                "command": "chat",
+                "response": response_text.strip()
+            }
+        except Exception as e:
+            return {
+                "type": "error",
+                "command": "chat",
+                "error": str(e)
+            }
+    
     def generate_transcript(self, audio_path: str) -> Dict[str, Any]:
         """Generate transcript from audio file.
         
@@ -465,12 +524,15 @@ Summary:"""
                     "transcript": ""
                 }
             
-            # Clear ExtendedEmbedding queue to prevent state leakage
-            # The queue lives on the embedding layer, not attention layers
-            if hasattr(self.model, 'language_model') and hasattr(self.model.language_model, 'model'):
-                embed = self.model.language_model.model.embed_tokens
-                if hasattr(embed, 'extended_embedding_queue'):
-                    embed.extended_embedding_queue.clear()
+            # Clear ExtendedEmbedding queue to prevent state leakage between calls.
+            # Qwen-Omni structure: model.thinker.model.embed_tokens
+            embed = None
+            if hasattr(self.model, 'thinker') and hasattr(self.model.thinker, 'model'):
+                embed = getattr(self.model.thinker.model, 'embed_tokens', None)
+            elif hasattr(self.model, 'language_model') and hasattr(self.model.language_model, 'model'):
+                embed = getattr(self.model.language_model.model, 'embed_tokens', None)
+            if embed and hasattr(embed, 'extended_embedding_queue'):
+                embed.extended_embedding_queue.clear()
             
             # Generate transcript — structured JSON output with language detection
             prompt_text = 'Detect the language spoken. Transcribe word for word in the detected language. Do NOT translate. Respond in JSON: {"language": "...", "transcript": "..."}'
@@ -795,6 +857,12 @@ Respond in JSON format with these exact fields:
             if not content:
                 return {"type": "error", "command": command, "error": "Missing content"}
             return self.summarize(content)
+        
+        elif command == "chat":
+            messages = command_data.get("messages")
+            if not messages:
+                return {"type": "error", "command": command, "error": "Missing messages"}
+            return self.chat(messages)
         
         elif command == "generate-transcript":
             audio_path = command_data.get("audio_path")

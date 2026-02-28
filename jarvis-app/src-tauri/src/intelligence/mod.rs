@@ -5,6 +5,7 @@ pub mod intelligencekit_provider;
 pub mod llm_model_manager;
 pub mod mlx_provider;
 pub mod noop_provider;
+pub mod queue;
 pub mod utils;
 pub mod venv_manager;
 
@@ -13,6 +14,7 @@ pub use intelligencekit_provider::IntelligenceKitProvider;
 pub use llm_model_manager::{LlmModelInfo, LlmModelManager};
 pub use mlx_provider::MlxProvider;
 pub use noop_provider::NoOpProvider;
+pub use queue::{IntelCommand, IntelQueue, IntelResponse};
 pub use venv_manager::VenvManager;
 
 use crate::settings::Settings;
