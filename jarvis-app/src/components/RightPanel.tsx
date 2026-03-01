@@ -7,6 +7,7 @@ import RecordingDetailPanel from './RecordingDetailPanel';
 import GemDetailPanel from './GemDetailPanel';
 import ChatPanel from './ChatPanel';
 import ProjectResearchChat from './ProjectResearchChat';
+import ProjectSummaryChat from './ProjectSummaryChat';
 import { RecordingMetadata, TranscriptionSegment, RecordingTranscriptionState, CoPilotState, CoPilotStatus } from '../state/types';
 
 type ActiveNav = 'record' | 'recordings' | 'gems' | 'projects' | 'youtube' | 'browser' | 'settings';
@@ -76,7 +77,7 @@ export default function RightPanel({
   onProjectGemsChanged,
   style
 }: RightPanelProps) {
-  const [activeTab, setActiveTab] = useState<'transcript' | 'copilot' | 'chat'>('transcript');
+  const [activeTab, setActiveTab] = useState<'transcript' | 'copilot' | 'chat' | 'summary'>('transcript');
   const [hasSeenCopilotUpdate, setHasSeenCopilotUpdate] = useState(false);
 
   // Knowledge file viewer state for gems
@@ -106,7 +107,7 @@ export default function RightPanel({
     !hasSeenCopilotUpdate;
 
   // Clear notification when user switches to copilot tab
-  const handleTabChange = (tab: 'transcript' | 'copilot' | 'chat') => {
+  const handleTabChange = (tab: 'transcript' | 'copilot' | 'chat' | 'summary') => {
     setActiveTab(tab);
     if (tab === 'copilot') {
       setHasSeenCopilotUpdate(true);
@@ -434,7 +435,7 @@ export default function RightPanel({
       );
     }
 
-    // Project selected + gem selected → tabs: Research | Detail | [knowledge files]
+    // Project selected + gem selected → tabs: Research | Summary | Detail | [knowledge files]
     if (selectedGemId) {
       return (
         <div className="right-panel" style={style}>
@@ -445,6 +446,12 @@ export default function RightPanel({
                 onClick={() => handleTabChange('chat')}
               >
                 Research
+              </button>
+              <button
+                className={`tab-button ${activeTab === 'summary' ? 'active' : ''}`}
+                onClick={() => handleTabChange('summary')}
+              >
+                Summary
               </button>
               <button
                 className={`tab-button ${activeTab === 'transcript' && activeGemTab === 'detail' ? 'active' : ''}`}
@@ -476,6 +483,13 @@ export default function RightPanel({
                   projectTitle={selectedProjectTitle || ''}
                   onGemsAdded={onProjectGemsChanged}
                 />
+              ) : activeTab === 'summary' ? (
+                <ProjectSummaryChat
+                  key={selectedProjectId}
+                  projectId={selectedProjectId}
+                  projectTitle={selectedProjectTitle || ''}
+                  onGemSaved={onProjectGemsChanged}
+                />
               ) : activeGemTab !== 'detail' && openKnowledgeFiles.includes(activeGemTab) ? (
                 <div className="knowledge-file-viewer">
                   {knowledgeFileContents[activeGemTab] ? (
@@ -500,15 +514,42 @@ export default function RightPanel({
       );
     }
 
-    // Project selected, no gem selected → research chat full-height
+    // Project selected, no gem selected → tabs: Research | Summary
     return (
       <div className="right-panel" style={style}>
-        <ProjectResearchChat
-          key={selectedProjectId}
-          projectId={selectedProjectId}
-          projectTitle={selectedProjectTitle || ''}
-          onGemsAdded={onProjectGemsChanged}
-        />
+        <div className="record-tabs-view">
+          <div className="tab-buttons">
+            <button
+              className={`tab-button ${activeTab === 'chat' ? 'active' : ''}`}
+              onClick={() => handleTabChange('chat')}
+            >
+              Research
+            </button>
+            <button
+              className={`tab-button ${activeTab === 'summary' ? 'active' : ''}`}
+              onClick={() => handleTabChange('summary')}
+            >
+              Summary
+            </button>
+          </div>
+          <div className="tab-content">
+            {activeTab === 'summary' ? (
+              <ProjectSummaryChat
+                key={selectedProjectId}
+                projectId={selectedProjectId}
+                projectTitle={selectedProjectTitle || ''}
+                onGemSaved={onProjectGemsChanged}
+              />
+            ) : (
+              <ProjectResearchChat
+                key={selectedProjectId}
+                projectId={selectedProjectId}
+                projectTitle={selectedProjectTitle || ''}
+                onGemsAdded={onProjectGemsChanged}
+              />
+            )}
+          </div>
+        </div>
       </div>
     );
   }

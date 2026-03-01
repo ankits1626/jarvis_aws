@@ -357,6 +357,7 @@ pub fn run() {
                 gem_store_arc.clone(),
                 intel_provider.clone(),
                 search_provider_for_agent,
+                knowledge_store_arc.clone(),
                 intel_queue_arc.clone(),
             );
             app.manage(Arc::new(tokio::sync::Mutex::new(project_agent)));
@@ -446,6 +447,10 @@ pub fn run() {
             projects::commands::suggest_project_topics,
             projects::commands::run_project_research,
             projects::commands::get_project_summary,
+            projects::commands::generate_project_summary_checkpoint,
+            projects::commands::save_project_summary_checkpoint,
+            projects::commands::send_summary_question,
+            projects::commands::get_latest_project_summary_checkpoint,
             projects::commands::start_project_chat,
             projects::commands::send_project_chat_message,
             projects::commands::get_project_chat_history,

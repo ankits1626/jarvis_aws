@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use tauri::State;
 use tokio::sync::Mutex as TokioMutex;
-use crate::gems::GemPreview;
-use crate::agents::project_agent::{ProjectResearchAgent, ProjectResearchResults};
+use crate::gems::{GemPreview, Gem};
+use crate::agents::project_agent::{ProjectResearchAgent, ProjectResearchResults, ProjectSummaryResult};
 use crate::agents::chatbot::ChatMessage;
 use super::store::*;
 
@@ -233,4 +233,137 @@ pub async fn clear_project_research_state(
     }
 
     Ok(())
+}
+
+// ── Summary Checkpoint Commands ──
+
+/// Generate a summary checkpoint and auto-save to disk.
+#[tauri::command]
+pub async fn generate_project_summary_checkpoint(
+    project_id: String,
+    agent: State<'_, Arc<TokioMutex<ProjectResearchAgent>>>,
+) -> Result<ProjectSummaryResult, String> {
+    let agent = agent.lock().await;
+    let result = agent.generate_summary_checkpoint(&project_id).await?;
+
+    // Auto-save summary to disk as versioned files
+    let data_dir = dirs::data_dir()
+        .ok_or_else(|| "Failed to determine app data directory".to_string())?;
+    let summaries_dir = data_dir
+        .join("com.jarvis.app")
+        .join("projects")
+        .join(&project_id)
+        .join("summaries");
+
+    tokio::fs::create_dir_all(&summaries_dir)
+        .await
+        .map_err(|e| format!("Failed to create summaries directory: {}", e))?;
+
+    let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
+
+    // Save human-readable summary as .md
+    let md_path = summaries_dir.join(format!("summary_{}.md", timestamp));
+    tokio::fs::write(&md_path, result.summary.as_bytes())
+        .await
+        .map_err(|e| format!("Failed to save summary .md: {}", e))?;
+
+    // Save full result as .json (includes composite_doc for Q&A)
+    let json_content = serde_json::to_string(&result)
+        .map_err(|e| format!("Failed to serialize summary: {}", e))?;
+    let json_path = summaries_dir.join(format!("summary_{}.json", timestamp));
+    tokio::fs::write(&json_path, json_content.as_bytes())
+        .await
+        .map_err(|e| format!("Failed to save summary .json: {}", e))?;
+
+    eprintln!(
+        "Projects/Summary: Auto-saved summary to {}",
+        summaries_dir.display()
+    );
+
+    Ok(result)
+}
+
+/// Save a reviewed summary as a gem checkpoint.
+#[tauri::command]
+pub async fn save_project_summary_checkpoint(
+    project_id: String,
+    summary_content: String,
+    composite_doc: String,
+    agent: State<'_, Arc<TokioMutex<ProjectResearchAgent>>>,
+) -> Result<Gem, String> {
+    let agent = agent.lock().await;
+    agent.save_summary_checkpoint(&project_id, &summary_content, &composite_doc).await
+}
+
+/// Answer a question about a generated summary.
+#[tauri::command]
+pub async fn send_summary_question(
+    question: String,
+    summary: String,
+    composite_doc: String,
+    agent: State<'_, Arc<TokioMutex<ProjectResearchAgent>>>,
+) -> Result<String, String> {
+    let agent = agent.lock().await;
+    agent.send_summary_question(&question, &summary, &composite_doc).await
+}
+
+/// Load the latest saved summary checkpoint from disk.
+#[tauri::command]
+pub async fn get_latest_project_summary_checkpoint(
+    project_id: String,
+) -> Result<Option<ProjectSummaryResult>, String> {
+    let data_dir = dirs::data_dir()
+        .ok_or_else(|| "Failed to determine app data directory".to_string())?;
+    let summaries_dir = data_dir
+        .join("com.jarvis.app")
+        .join("projects")
+        .join(&project_id)
+        .join("summaries");
+
+    if !summaries_dir.exists() {
+        return Ok(None);
+    }
+
+    // Find the latest summary_*.json file (timestamps sort lexicographically)
+    let mut entries = tokio::fs::read_dir(&summaries_dir)
+        .await
+        .map_err(|e| format!("Failed to read summaries directory: {}", e))?;
+
+    let mut latest_json: Option<std::path::PathBuf> = None;
+
+    while let Some(entry) = entries.next_entry().await
+        .map_err(|e| format!("Failed to read directory entry: {}", e))?
+    {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with("summary_") && name_str.ends_with(".json") {
+            match &latest_json {
+                Some(prev) => {
+                    if entry.path() > *prev {
+                        latest_json = Some(entry.path());
+                    }
+                }
+                None => latest_json = Some(entry.path()),
+            }
+        }
+    }
+
+    let json_path = match latest_json {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+
+    let content = tokio::fs::read_to_string(&json_path)
+        .await
+        .map_err(|e| format!("Failed to read summary file: {}", e))?;
+
+    let result: ProjectSummaryResult = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse summary file: {}", e))?;
+
+    eprintln!(
+        "Projects/Summary: Loaded latest checkpoint from {}",
+        json_path.display()
+    );
+
+    Ok(Some(result))
 }

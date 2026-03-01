@@ -18,6 +18,7 @@ const KNOWN_SUBFILES: &[&str] = &[
     "enrichment.md",
     "transcript.md",
     "copilot.md",
+    "composite_summary_of_all_gems.md",
     "gem.md",
 ];
 

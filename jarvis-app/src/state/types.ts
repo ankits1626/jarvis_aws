@@ -1019,3 +1019,18 @@ export interface ProjectResearchResults {
   /** Topics that were searched */
   topics_searched: string[];
 }
+
+/** Result of summary checkpoint generation — returned for review before saving */
+export interface ProjectSummaryResult {
+  /** LLM-generated summary of all project gems */
+  summary: string;
+  
+  /** Full composite document (all gems concatenated chronologically) */
+  composite_doc: string;
+  
+  /** Number of gems analyzed */
+  gems_analyzed: number;
+  
+  /** Number of chunks used in summarization */
+  chunks_used: number;
+}

@@ -8,12 +8,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+use chrono::Utc;
 
 use super::chatbot::{Chatbot, ChatMessage};
 use super::project_chat::ProjectChatSource;
-use crate::gems::GemStore;
+use crate::gems::{GemStore, Gem};
 use crate::intelligence::provider::IntelProvider;
 use crate::intelligence::queue::IntelQueue;
+use crate::knowledge::KnowledgeStore;
 use crate::projects::ProjectStore;
 use crate::search::{
     SearchResultProvider, GemSearchResult, WebSearchResult,
@@ -28,6 +31,19 @@ pub struct ProjectResearchResults {
     pub suggested_gems: Vec<GemSearchResult>,
     /// The topics that were actually searched (user-curated)
     pub topics_searched: Vec<String>,
+}
+
+/// Result of summary checkpoint generation — returned to frontend for review.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectSummaryResult {
+    /// The generated summary markdown
+    pub summary: String,
+    /// The full composite document used as LLM input
+    pub composite_doc: String,
+    /// Number of gems analyzed
+    pub gems_analyzed: usize,
+    /// Number of chunks used in summarization
+    pub chunks_used: usize,
 }
 
 // ── LLM Prompts ──
@@ -55,6 +71,33 @@ Rules:
 - Use markdown formatting
 - If there are few or no resources, acknowledge this and suggest next steps"#;
 
+const CHECKPOINT_SUMMARY_PROMPT: &str = r#"You are a research analyst. Given a project and its collected resources (listed chronologically), generate a comprehensive summary covering all key points.
+
+Format:
+- Group findings by date
+- Under each resource: 3-5 bullet points with the most important highlights
+- End with a synthesis of cross-cutting themes
+
+Rules:
+- Be specific — cite actual facts, numbers, and insights
+- Every resource should have key points extracted
+- Use markdown formatting
+- Keep each bullet to one concise sentence"#;
+
+const CHUNK_SUMMARY_PROMPT: &str = r#"You are summarizing a section of a research project. Extract the key points and highlights from each resource below. Be specific and preserve important details.
+
+Format: For each resource, list 3-5 key bullet points."#;
+
+const MERGE_SUMMARY_PROMPT: &str = r#"You have summaries from different sections of a research project. Combine them into one cohesive summary document.
+
+Rules:
+- Preserve all key points from each section
+- Maintain chronological order by date
+- Add a brief synthesis of cross-cutting themes at the end
+- Use markdown formatting"#;
+
+const SUMMARY_QA_PROMPT: &str = r#"You are answering questions about a project summary. Use the summary and source material provided to give specific, grounded answers. If the answer isn't in the provided material, say so."#;
+
 /// Persistent agent for project research, summarization, and chat.
 ///
 /// Registered in Tauri state as Arc<TokioMutex<ProjectResearchAgent>>.
@@ -64,6 +107,7 @@ pub struct ProjectResearchAgent {
     gem_store: Arc<dyn GemStore>,
     intel_provider: Arc<dyn IntelProvider>,
     search_provider: Arc<dyn SearchResultProvider>,
+    knowledge_store: Arc<dyn KnowledgeStore>,
     intel_queue: Arc<IntelQueue>,
     chatbot: Chatbot,
     /// Maps session_id -> ProjectChatSource for active chat sessions
@@ -76,6 +120,7 @@ impl ProjectResearchAgent {
         gem_store: Arc<dyn GemStore>,
         intel_provider: Arc<dyn IntelProvider>,
         search_provider: Arc<dyn SearchResultProvider>,
+        knowledge_store: Arc<dyn KnowledgeStore>,
         intel_queue: Arc<IntelQueue>,
     ) -> Self {
         eprintln!("Projects/Research: Agent initialized");
@@ -84,6 +129,7 @@ impl ProjectResearchAgent {
             gem_store,
             intel_provider,
             search_provider,
+            knowledge_store,
             intel_queue,
             chatbot: Chatbot::new(),
             chat_sources: HashMap::new(),
@@ -352,4 +398,413 @@ impl ProjectResearchAgent {
         self.chat_sources.remove(session_id);
         eprintln!("Projects/Research: Chat session ended: {}", session_id);
     }
+
+    // ────────────────────────────────────────────
+    // Summary Checkpoint Generation
+    // ────────────────────────────────────────────
+
+    /// Build the composite document from all project gems' knowledge files.
+    ///
+    /// Returns: (full_composite_doc, individual_gem_sections, gems_analyzed)
+    ///
+    /// For each gem (sorted by captured_at ASC):
+    ///   1. Try KnowledgeStore::get_assembled(gem_id) → gem.md content
+    ///   2. Fallback: assemble from DB fields (title + description + content + summary + transcript)
+    ///   3. Wrap with separator header containing gem metadata
+    async fn build_composite_document(
+        &self,
+        project_id: &str,
+    ) -> Result<(String, Vec<String>, usize), String> {
+        // Load project with gems
+        let detail = self.project_store.get(project_id).await?;
+        let project = &detail.project;
+
+        // Return error if no gems
+        if detail.gems.is_empty() {
+            return Err("This project has no gems yet. Add some resources first.".to_string());
+        }
+
+        // Sort gems by captured_at ascending (chronological)
+        let mut gems = detail.gems.clone();
+        gems.sort_by(|a, b| a.captured_at.cmp(&b.captured_at));
+
+        // Build composite header
+        let objective = project.objective.as_deref().unwrap_or("Not specified");
+        let first_date = &gems[0].captured_at;
+        let last_date = &gems[gems.len() - 1].captured_at;
+        
+        let header = format!(
+            "# Project: {}\n**Objective:** {}\n**Gems:** {} | **Date range:** {} — {}\n\n---\n",
+            project.title,
+            objective,
+            gems.len(),
+            first_date,
+            last_date
+        );
+
+        // Build individual gem sections
+        let mut gem_sections: Vec<String> = Vec::new();
+        let mut gems_analyzed = 0;
+
+        for (idx, gem_preview) in gems.iter().enumerate() {
+            let gem_num = idx + 1;
+            
+            // Try to get assembled gem.md content first
+            let content = match self.knowledge_store.get_assembled(&gem_preview.id).await {
+                Ok(Some(assembled_content)) => {
+                    eprintln!("Projects/Summary: Using assembled content for gem {}", gem_preview.id);
+                    assembled_content
+                }
+                Ok(None) | Err(_) => {
+                    // Fallback: assemble from DB fields
+                    eprintln!("Projects/Summary: Falling back to DB fields for gem {}", gem_preview.id);
+                    
+                    match self.gem_store.get(&gem_preview.id).await {
+                        Ok(Some(full_gem)) => {
+                            let mut parts: Vec<String> = Vec::new();
+                            
+                            // Title
+                            parts.push(format!("# {}", full_gem.title));
+                            
+                            // Description
+                            if let Some(ref desc) = full_gem.description {
+                                parts.push(format!("\n**Description:** {}", desc));
+                            }
+                            
+                            // Content (first 2000 chars)
+                            if let Some(ref content) = full_gem.content {
+                                let preview = if content.len() > 2000 {
+                                    format!("{}...\n\n[Content truncated — original was {} characters]", 
+                                            &content[..2000], content.len())
+                                } else {
+                                    content.clone()
+                                };
+                                parts.push(format!("\n**Content:**\n{}", preview));
+                            }
+                            
+                            // AI enrichment summary
+                            if let Some(ref enrichment) = full_gem.ai_enrichment {
+                                if let Some(summary) = enrichment.get("summary").and_then(|v| v.as_str()) {
+                                    parts.push(format!("\n**Summary:** {}", summary));
+                                }
+                            }
+                            
+                            // Transcript (first 2000 chars)
+                            if let Some(ref transcript) = full_gem.transcript {
+                                let preview = if transcript.len() > 2000 {
+                                    format!("{}...\n\n[Transcript truncated — original was {} characters]", 
+                                            &transcript[..2000], transcript.len())
+                                } else {
+                                    transcript.clone()
+                                };
+                                parts.push(format!("\n**Transcript:**\n{}", preview));
+                            }
+                            
+                            if parts.is_empty() {
+                                "(No content available for this gem)".to_string()
+                            } else {
+                                parts.join("\n")
+                            }
+                        }
+                        Ok(None) => {
+                            eprintln!("Projects/Summary: Gem {} not found in store", gem_preview.id);
+                            "(No content available for this gem)".to_string()
+                        }
+                        Err(e) => {
+                            eprintln!("Projects/Summary: Error loading gem {}: {}", gem_preview.id, e);
+                            "(No content available for this gem)".to_string()
+                        }
+                    }
+                }
+            };
+
+            // Skip gems with no content
+            if content.trim() == "(No content available for this gem)" {
+                eprintln!("Projects/Summary: Skipping gem {} — no content to analyze", gem_preview.id);
+                continue;
+            }
+
+            // Wrap with separator header
+            let section = format!(
+                "========================================\nGEM {}: \"{}\"\nSource: {} | Domain: {} | Captured: {}\n========================================\n\n{}",
+                gem_num,
+                gem_preview.title,
+                gem_preview.source_type,
+                gem_preview.domain,
+                gem_preview.captured_at,
+                content
+            );
+
+            gem_sections.push(section);
+            gems_analyzed += 1;
+        }
+
+        // Build full composite document
+        let full_composite_doc = format!("{}\n\n{}", header, gem_sections.join("\n\n"));
+
+        eprintln!(
+            "Projects/Summary: Built composite document: {} chars, {} gems",
+            full_composite_doc.len(),
+            gems_analyzed
+        );
+
+        Ok((full_composite_doc, gem_sections, gems_analyzed))
+    }
+
+    /// Group gem sections into chunks respecting gem boundaries.
+    ///
+    /// Walks through gem sections in order, accumulating into chunks until
+    /// adding the next section would exceed max_chars. If a single gem exceeds
+    /// the limit, it's truncated with a note.
+    ///
+    /// Returns: Vec of chunk strings, each containing one or more complete gem sections.
+    fn chunk_by_gem_boundaries(gem_sections: &[String], max_chars: usize) -> Vec<String> {
+        let mut chunks: Vec<String> = Vec::new();
+        let mut current_chunk = String::new();
+
+        for section in gem_sections {
+            let section_len = section.len();
+            let separator_len = if current_chunk.is_empty() { 0 } else { 2 }; // "\n\n"
+            let would_be_len = current_chunk.len() + separator_len + section_len;
+
+            if would_be_len <= max_chars {
+                // Section fits in current chunk
+                if !current_chunk.is_empty() {
+                    current_chunk.push_str("\n\n");
+                }
+                current_chunk.push_str(section);
+            } else if current_chunk.is_empty() {
+                // Single gem exceeds limit — truncate it
+                let truncated = if section_len > max_chars {
+                    let truncate_at = max_chars.saturating_sub(100); // Leave room for note
+                    format!(
+                        "{}\n\n[Content truncated — original was {} characters]",
+                        &section[..truncate_at],
+                        section_len
+                    )
+                } else {
+                    section.clone()
+                };
+                chunks.push(truncated);
+            } else {
+                // Current chunk is full — push it and start new chunk with this section
+                chunks.push(current_chunk);
+                current_chunk = section.clone();
+            }
+        }
+
+        // Push final chunk if non-empty
+        if !current_chunk.is_empty() {
+            chunks.push(current_chunk);
+        }
+
+        eprintln!(
+            "Projects/Summary: Split into {} chunks from {} gem sections",
+            chunks.len(),
+            gem_sections.len()
+        );
+
+        chunks
+    }
+
+    /// Generate a summary checkpoint for review (does NOT save).
+    ///
+    /// Orchestrates the full pipeline:
+    /// 1. Build composite document from all project gems
+    /// 2. Chunk by gem boundaries
+    /// 3. Summarize each chunk via LLM
+    /// 4. Merge chunk summaries if multiple chunks
+    /// 5. Return summary + composite doc for frontend review
+    pub async fn generate_summary_checkpoint(
+        &self,
+        project_id: &str,
+    ) -> Result<ProjectSummaryResult, String> {
+        eprintln!("Projects/Summary: Generating summary checkpoint for project {}", project_id);
+
+        // Build composite document from all gems
+        let (composite_doc, gem_sections, gems_analyzed) = 
+            self.build_composite_document(project_id).await?;
+
+        // Chunk by gem boundaries (16000 chars ≈ 4000 tokens)
+        let chunks = Self::chunk_by_gem_boundaries(&gem_sections, 16000);
+
+        // Generate summary based on chunk count
+        let summary = if chunks.len() == 1 {
+            // Single chunk — one LLM call
+            eprintln!("Projects/Summary: Single chunk — using direct summarization");
+            self.intel_provider.chat(&[
+                ("system".to_string(), CHECKPOINT_SUMMARY_PROMPT.to_string()),
+                ("user".to_string(), chunks[0].clone()),
+            ]).await?
+        } else {
+            // Multiple chunks — summarize each, then merge
+            eprintln!("Projects/Summary: {} chunks — using chunked summarization", chunks.len());
+            
+            let mut chunk_summaries: Vec<String> = Vec::new();
+            for (i, chunk) in chunks.iter().enumerate() {
+                eprintln!("Projects/Summary: Summarizing chunk {} of {}", i + 1, chunks.len());
+                match self.intel_provider.chat(&[
+                    ("system".to_string(), CHUNK_SUMMARY_PROMPT.to_string()),
+                    ("user".to_string(), chunk.clone()),
+                ]).await {
+                    Ok(chunk_summary) => chunk_summaries.push(chunk_summary),
+                    Err(e) => {
+                        eprintln!("Projects/Summary: Chunk {} failed: {}", i + 1, e);
+                        // Continue with remaining chunks — don't fail entirely
+                    }
+                }
+            }
+
+            // Check if all chunks failed
+            if chunk_summaries.is_empty() {
+                return Err("All chunks failed during summarization".to_string());
+            }
+
+            // Merge pass
+            eprintln!("Projects/Summary: Merging {} chunk summaries", chunk_summaries.len());
+            let merged_input = chunk_summaries.join("\n\n---\n\n");
+            self.intel_provider.chat(&[
+                ("system".to_string(), MERGE_SUMMARY_PROMPT.to_string()),
+                ("user".to_string(), merged_input),
+            ]).await?
+        };
+
+        eprintln!(
+            "Projects/Summary: Generated summary ({} chars) from {} gems in {} chunks",
+            summary.len(),
+            gems_analyzed,
+            chunks.len()
+        );
+
+        Ok(ProjectSummaryResult {
+            summary,
+            composite_doc,
+            gems_analyzed,
+            chunks_used: chunks.len(),
+        })
+    }
+
+    /// Answer a question about a generated summary.
+    ///
+    /// Stateless Q&A: user asks a question, LLM answers using summary + composite doc as context.
+    /// Each question is independent — no chat session needed.
+    pub async fn send_summary_question(
+        &self,
+        question: &str,
+        summary: &str,
+        composite_doc: &str,
+    ) -> Result<String, String> {
+        eprintln!("Projects/Summary: Answering question ({} chars)", question.len());
+
+        // Truncate composite_doc if too long (preserve beginning with oldest/foundational gems)
+        let max_context = 10000;
+        let truncated_composite = if composite_doc.len() > max_context {
+            &composite_doc[..max_context]
+        } else {
+            composite_doc
+        };
+
+        // Build context string
+        let context = format!(
+            "## Generated Summary\n\n{}\n\n## Source Material\n\n{}",
+            summary, truncated_composite
+        );
+
+        // Call LLM
+        let user_message = format!("{}\n\nQuestion: {}", context, question);
+        let answer = self.intel_provider.chat(&[
+            ("system".to_string(), SUMMARY_QA_PROMPT.to_string()),
+            ("user".to_string(), user_message),
+        ]).await?;
+
+        eprintln!("Projects/Summary: Answer generated ({} chars)", answer.len());
+        Ok(answer)
+    }
+
+    // ────────────────────────────────────────────
+    // Save Summary as Gem
+    // ────────────────────────────────────────────
+
+    /// Save a generated summary as a new gem in the project.
+    ///
+    /// Creates a gem with source_type "ProjectSummary", adds it to the project,
+    /// generates knowledge files, and writes the composite document as a subfile.
+    ///
+    /// Returns the created Gem for the frontend to display.
+    pub async fn save_summary_checkpoint(
+        &self,
+        project_id: &str,
+        summary_content: &str,
+        composite_doc: &str,
+    ) -> Result<Gem, String> {
+        eprintln!("Projects/Summary: Saving summary checkpoint for project {}", project_id);
+
+        // Step 1: Load project metadata
+        let project_detail = self.project_store.get(project_id).await
+            .map_err(|e| format!("Failed to load project: {}", e))?;
+        let gem_count = project_detail.gems.len();
+        let project_title = project_detail.project.title.clone();
+
+        // Step 2: Build the Gem struct
+        let gem = Gem {
+            id: Uuid::new_v4().to_string(),
+            source_type: "ProjectSummary".to_string(),
+            source_url: format!(
+                "jarvis://project/{}/summary/{}",
+                project_id,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            ),
+            title: format!("Summary: {} — {}", project_title, Utc::now().format("%B %d, %Y")),
+            content: Some(summary_content.to_string()),
+            domain: "jarvis".to_string(),
+            description: Some(format!("Summary of {} gems from {}", gem_count, project_title)),
+            author: None,
+            captured_at: Utc::now().to_rfc3339(),
+            source_meta: serde_json::json!({}),
+            ai_enrichment: None,
+            transcript: None,
+            transcript_language: None,
+        };
+
+        // Step 3: Save gem to database
+        let saved_gem = self.gem_store.save(gem).await
+            .map_err(|e| format!("Failed to save summary gem: {}", e))?;
+
+        // Step 4: Add gem to project
+        self.project_store.add_gems(project_id, &[saved_gem.id.clone()]).await
+            .map_err(|e| format!("Failed to add summary gem to project: {}", e))?;
+
+        // Step 5: Create knowledge files
+        self.knowledge_store.create(&saved_gem).await
+            .map_err(|e| format!("Failed to create knowledge files: {}", e))?;
+
+        // Step 6: Write composite file as subfile
+        self.knowledge_store.update_subfile(
+            &saved_gem.id,
+            "composite_summary_of_all_gems.md",
+            composite_doc,
+        ).await
+            .map_err(|e| format!("Failed to write composite file: {}", e))?;
+
+        // Step 7: Index for search (fire-and-forget)
+        if let Err(e) = self.search_provider.index_gem(&saved_gem.id).await {
+            eprintln!("Projects/Summary: Failed to index summary gem {}: {}", saved_gem.id, e);
+        }
+
+        // Step 8: Log and return
+        eprintln!(
+            "Projects/Summary: Saved summary gem {} for project {} ({} chars)",
+            saved_gem.id, project_id, summary_content.len()
+        );
+
+        Ok(saved_gem)
+    }
+
+    // ────────────────────────────────────────────
+    // Load Latest Summary Checkpoint
+    // ────────────────────────────────────────────
+
 }
