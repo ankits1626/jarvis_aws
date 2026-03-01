@@ -2,73 +2,79 @@
 
 ## Overview
 
-This design adds a **Project Research Agent** — a persistent, reusable agent that manages research (web search + gem suggestions), summarization, and chat for any project. It follows established Jarvis patterns:
-
-- **Search infrastructure**: Extends `SearchResultProvider` with `web_search` default method. `TavilyProvider` for web search, `CompositeSearchProvider` for delegation. Same trait, no new interfaces.
-- **Agent pattern**: `ProjectResearchAgent` follows `CoPilotAgent` — a struct in Tauri state with action methods. Registered as `Arc<TokioMutex<ProjectResearchAgent>>`.
-- **Chat pattern**: `ProjectChatSource` implements `Chatable` (like `RecordingChatSource`), enabling the generic `Chatbot` engine to chat about project content.
+This design adds a **Conversational Research Agent** — a chat-first assistant that lives in the right panel when viewing a project. The user's first interaction with any project is a conversation: the agent suggests research topics, the user refines them through natural dialogue, and research results flow back as rich messages in the chat.
 
 ### Design Goals
 
-1. **No new search traits**: Everything flows through `SearchResultProvider`. Existing providers unchanged.
-2. **Pluggable web search**: Tavily today, swap to Brave/SerpAPI later by implementing one method.
-3. **Reusable agent**: Research + Summarize + Chat available on any project at any time — not just at creation.
-4. **Existing patterns**: `Chatable` for chat, `Chatbot` for session management, `CoPilotAgent`-style state registration.
+1. **Chat-first**: Research is a conversation, not a form submission. The agent lives in the RightPanel as a persistent collaborator.
+2. **No new search traits**: Everything flows through `SearchResultProvider`. Existing providers unchanged.
+3. **Reuse Chatbot engine**: `ProjectChatSource` implements `Chatable`, the generic `Chatbot` handles sessions. The research chat is a specialized chat with a richer system prompt.
+4. **Pluggable web search**: Tavily today, swap to Brave/SerpAPI later by implementing one method.
 5. **Graceful degradation**: No Tavily key? Gem suggestions still work. API down? Skip web results, don't fail.
 
 ### Key Design Decisions
 
 - **Default methods, not a new trait**: `web_search` and `supports_web_search` are default methods on `SearchResultProvider`. FTS/QMD inherit no-ops. `TavilyProvider` overrides them.
 - **CompositeSearchProvider**: Wraps gem provider + optional web provider. Registered as the single `Arc<dyn SearchResultProvider>`. All existing commands work unchanged.
-- **Agent holds all providers**: `ProjectResearchAgent` holds `Arc` references to `ProjectStore`, `GemStore`, `IntelProvider`, `SearchResultProvider`, and an `IntelQueue`. All actions can be invoked independently.
-- **`ProjectChatSource` implements `Chatable`**: Assembles project gem content as context. `Chatbot` handles sessions, history, LLM prompting, log files. No chat-specific logic in the agent.
+- **Two-phase research flow**: `suggest_topics()` generates the opening message, `run_research(topics)` executes on user-curated topics. The user controls what gets searched.
+- **RightPanel integration**: When `activeNav === 'projects'`, the RightPanel shows a "Research" tab (default) alongside the existing "Detail" tab (when a gem is selected). Follows the same tab pattern as recordings (Details | Chat).
+- **Rich chat messages**: Agent responses containing research results include structured JSON blocks that the frontend parses and renders as web result cards and gem suggestion cards inline in the chat.
 - **Sequential web searches**: One Tavily call per topic, sequentially. Keeps rate limits simple.
-- **reqwest already in Cargo.toml**: `reqwest = { version = "0.12", features = ["stream", "blocking", "multipart", "json"] }` — no dependency changes needed.
+- **reqwest already in Cargo.toml**: No dependency changes needed.
 
-### Operational Flow — Research
-
-```
-User clicks "Research" → invoke('get_project_research', { projectId })
-  → ProjectResearchAgent::research(project_id)
-    → 1. ProjectStore::get(project_id) — load project metadata
-    → 2. IntelProvider::chat(TOPIC_PROMPT, context) — generate 3-5 topics
-    → 3. For each topic: SearchResultProvider::web_search(topic, 5) — via Composite → Tavily
-    → 4. Deduplicate web results by URL
-    → 5. SearchResultProvider::search(project.title, 20) — gem suggestions via Composite → QMD/FTS
-    → 6. Enrich gems with GemPreview data
-    → Return ProjectResearchResults { web_results, suggested_gems, topics_generated }
-```
-
-### Operational Flow — Summarize
+### User Experience Flow
 
 ```
-User clicks "Summarize" → invoke('get_project_summary', { projectId })
-  → ProjectResearchAgent::summarize(project_id)
-    → 1. ProjectStore::get(project_id) — load project + gem list
-    → 2. For each gem: GemStore::get(gem_id) — load titles, descriptions, summaries
-    → 3. Assemble context: project metadata + all gem content
-    → 4. IntelProvider::chat(SUMMARY_PROMPT, context) — generate summary
-    → Return summary String
+1. User creates or opens a project
+   → RightPanel shows "Research" tab with chat interface
+   → Agent auto-sends opening message:
+     "I see your project is about {title}. Here are some research topics I'd suggest:
+      1. {topic1}
+      2. {topic2}
+      3. {topic3}
+      Want me to search for these? You can add your own topics or ask me to modify these."
+
+2. User responds naturally:
+   "Also search for kubernetes security scanning tools"
+   "Drop topic 2"
+   "Go ahead and search"
+
+3. Agent executes research on user-curated topics
+   → Response contains structured result blocks
+   → Frontend renders web result cards (clickable → opens URL)
+   → Frontend renders gem suggestion cards (with "Add to Project" button)
+
+4. Ongoing conversation:
+   "Summarize what we've found"     → runs summarization pipeline
+   "Search for more about topic X"  → runs additional web search
+   "What does gem Y say about Z?"   → answers from project context
 ```
 
-### Operational Flow — Chat
+### Layout
 
 ```
-User starts chat → invoke('start_project_chat', { projectId })
-  → ProjectResearchAgent::start_chat(project_id)
-    → Creates ProjectChatSource (implements Chatable)
-    → Chatbot::start_session(source) → returns session_id
-
-User sends message → invoke('send_project_chat_message', { sessionId, message })
-  → ProjectResearchAgent::send_chat_message(session_id, message)
-    → Chatbot::send_message(session_id, message, source, intel_queue)
-      → source.get_context() — assembles project gem content
-      → IntelQueue::submit(Chat { system + history + user }) → LLM response
-    → Return assistant response
-
-User ends chat → invoke('end_project_chat', { sessionId })
-  → ProjectResearchAgent::end_chat(session_id)
-    → Chatbot::end_session(session_id)
+┌──────────┬───────────────────────────┬──────────────────────────┐
+│ LeftNav  │     Center Content        │     RightPanel           │
+│          │                           │                          │
+│ ...      │  ProjectsContainer        │  Tab: [Research][Detail] │
+│ Projects │  ┌──────────┬────────────┐│                          │
+│ ...      │  │ Project  │ Project    ││  Agent: I see your       │
+│          │  │ List     │ GemList    ││  project is about...     │
+│          │  │          │            ││                          │
+│          │  │ • Proj A │ gems...    ││  1. topic one            │
+│          │  │ • Proj B │            ││  2. topic two            │
+│          │  │          │            ││  3. topic three          │
+│          │  │          │            ││                          │
+│          │  │          │            ││  User: Go ahead          │
+│          │  │          │            ││                          │
+│          │  │          │            ││  Agent: Found results... │
+│          │  │          │            ││  [web cards]             │
+│          │  │          │            ││  [gem cards]             │
+│          │  │          │            ││                          │
+│          │  │          │            ││  ┌────────────────────┐  │
+│          │  │          │            ││  │ Type a message.. ↵ │  │
+│          │  └──────────┴────────────┘│  └────────────────────┘  │
+└──────────┴───────────────────────────┴──────────────────────────┘
 ```
 
 ---
@@ -93,12 +99,20 @@ src/agents/
 ├── recording_chat.rs      — RecordingChatSource (UNCHANGED)
 ├── copilot.rs             — CoPilotAgent (UNCHANGED)
 ├── project_chat.rs        — ProjectChatSource (NEW: Chatable for projects)
-├── project_agent.rs       — ProjectResearchAgent (NEW: research + summarize + chat)
+├── project_agent.rs       — ProjectResearchAgent (NEW: suggest_topics + run_research + summarize + chat)
 └── mod.rs                 — Module root (MODIFIED: +project_chat, +project_agent)
 
 src/projects/
 ├── commands.rs            — (MODIFIED: +agent Tauri commands)
 └── ...                    — (everything else unchanged)
+
+Frontend:
+├── components/
+│   ├── ProjectResearchChat.tsx  — NEW: Chat interface with rich message rendering
+│   ├── RightPanel.tsx           — MODIFIED: "Research" tab for projects
+│   └── ProjectsContainer.tsx    — MODIFIED: passes project state to RightPanel
+├── state/types.ts               — MODIFIED: +WebSearchResult, +ProjectResearchResults
+└── App.css                      — MODIFIED: +research chat styles
 ```
 
 ### Dependency Graph
@@ -120,10 +134,11 @@ src/projects/
          │  │ intel_queue    chatbot           │ │
          │  └──────────────────────────────────┘ │
          │                                       │
-         │  .research(id) → web+gem results     │
-         │  .summarize(id) → summary string     │
-         │  .start_chat(id) → session_id        │
-         │  .send_chat_message(sid, msg) → resp │
+         │  .suggest_topics(id) → topics         │
+         │  .run_research(id, topics) → results  │
+         │  .summarize(id) → summary string      │
+         │  .start_chat(id) → session_id         │
+         │  .send_chat_message(sid, msg) → resp  │
          └───────────────────────────────────────┘
                      │                     │
           ┌──────────┘                     └──────────┐
@@ -149,377 +164,95 @@ src/projects/
                                            └────────────────────┘
 ```
 
+### Operational Flow — Two-Phase Research
+
+```
+Phase A: Topic Suggestion (auto on chat open)
+──────────────────────────────────────────────
+Frontend calls invoke('suggest_project_topics', { projectId })
+  → ProjectResearchAgent::suggest_topics(project_id)
+    → 1. ProjectStore::get(project_id) — load project metadata
+    → 2. IntelProvider::chat(TOPIC_PROMPT, context) — generate 3-5 topics
+    → 3. Parse JSON array response (strip markdown code fences)
+    → Return Vec<String> of topics
+  → Frontend renders topics as agent's opening message
+
+Phase B: Execute Research (on user confirmation)
+─────────────────────────────────────────────────
+Frontend calls invoke('run_project_research', { projectId, topics })
+  → ProjectResearchAgent::run_research(project_id, topics)
+    → 1. For each topic: SearchResultProvider::web_search(topic, 5) — via Composite → Tavily
+    → 2. Deduplicate web results by URL
+    → 3. SearchResultProvider::search(project.title, 20) — gem suggestions via Composite → QMD/FTS
+    → 4. Enrich gems with GemPreview data
+    → Return ProjectResearchResults { web_results, suggested_gems, topics_searched }
+  → Frontend renders results as rich cards in chat
+```
+
+### Operational Flow — Summarize
+
+```
+User says "summarize" or clicks Summarize button
+  → invoke('get_project_summary', { projectId })
+  → ProjectResearchAgent::summarize(project_id)
+    → 1. ProjectStore::get(project_id) — load project + gem list
+    → 2. For each gem: GemStore::get(gem_id) — load titles, descriptions, summaries
+    → 3. Assemble context: project metadata + all gem content
+    → 4. IntelProvider::chat(SUMMARY_PROMPT, context) — generate summary
+    → Return summary String
+```
+
+### Operational Flow — Chat (Q&A over project content)
+
+```
+User starts chat → invoke('start_project_chat', { projectId })
+  → ProjectResearchAgent::start_chat(project_id)
+    → Creates ProjectChatSource (implements Chatable)
+    → Chatbot::start_session(source) → returns session_id
+
+User sends message → invoke('send_project_chat_message', { sessionId, message })
+  → ProjectResearchAgent::send_chat_message(session_id, message)
+    → Chatbot::send_message(session_id, message, source, intel_queue)
+      → source.get_context() — assembles project gem content
+      → IntelQueue::submit(Chat { system + history + user }) → LLM response
+    → Return assistant response
+
+User ends chat → invoke('end_project_chat', { sessionId })
+  → ProjectResearchAgent::end_chat(session_id)
+    → Chatbot::end_session(session_id)
+```
+
 ---
 
-## Modules and Interfaces
+## Search Infrastructure (Phases 1-2 — ALREADY BUILT)
 
-### `provider.rs` — Trait Extension (MODIFIED)
+Phases 1-2 are complete and compiled. The following modules exist and work:
+
+### `provider.rs` — Trait Extension (BUILT)
 
 **File**: `src/search/provider.rs`
 
-**Changes**: Add `WebSearchResult`, `WebSourceType` types and two default methods to `SearchResultProvider`.
+Added `WebSourceType` enum, `WebSearchResult` struct, and two default methods (`web_search`, `supports_web_search`) to `SearchResultProvider`. FTS/QMD providers unchanged — they inherit defaults.
 
-```rust
-// ── NEW types (add after existing GemSearchResult) ──
-
-/// A search result from the web (not a gem).
-///
-/// Returned by SearchResultProvider::web_search for providers that support it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebSearchResult {
-    pub title: String,
-    pub url: String,
-    pub snippet: String,
-    pub source_type: WebSourceType,
-    pub domain: String,
-    pub published_date: Option<String>,
-}
-
-/// Classification of a web search result by content type.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum WebSourceType {
-    /// Academic papers (arxiv, scholar, semantic scholar)
-    Paper,
-    /// Blog posts and articles (medium, dev.to, substack)
-    Article,
-    /// Video content (youtube, vimeo)
-    Video,
-    /// Everything else
-    Other,
-}
-```
-
-```rust
-// ── MODIFIED trait (add these two methods after reindex_all) ──
-
-#[async_trait]
-pub trait SearchResultProvider: Send + Sync {
-    // --- Existing methods (UNCHANGED) ---
-    async fn check_availability(&self) -> AvailabilityResult;
-    async fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, String>;
-    async fn index_gem(&self, gem_id: &str) -> Result<(), String>;
-    async fn remove_gem(&self, gem_id: &str) -> Result<(), String>;
-    async fn reindex_all(&self) -> Result<usize, String>;
-
-    // --- NEW default methods ---
-
-    /// Search the web for external resources (papers, articles, videos).
-    ///
-    /// Default: returns empty vec (provider does not support web search).
-    /// Override in providers that have web search capability (e.g., Tavily).
-    async fn web_search(
-        &self,
-        _query: &str,
-        _limit: usize,
-    ) -> Result<Vec<WebSearchResult>, String> {
-        Ok(Vec::new())
-    }
-
-    /// Check if this provider supports web search.
-    ///
-    /// Default: false. Override in web-capable providers.
-    fn supports_web_search(&self) -> bool {
-        false
-    }
-}
-```
-
-**Impact on existing providers**: None. `FtsResultProvider` and `QmdResultProvider` inherit the defaults — `web_search` returns empty, `supports_web_search` returns false. No code changes needed.
-
-### `tavily_provider.rs` — Tavily Web Search (NEW)
+### `tavily_provider.rs` — Tavily Web Search (BUILT)
 
 **File**: `src/search/tavily_provider.rs`
 
-**Responsibilities**: Implement web search via the Tavily Search API. No-op for gem-related methods.
+`TavilyProvider` implementing `SearchResultProvider::web_search` via Tavily Search API. Classifies results by domain (Video/Paper/Article/Other). No-ops for gem methods.
 
-```rust
-use async_trait::async_trait;
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use crate::intelligence::AvailabilityResult;
-use super::provider::{
-    SearchResultProvider, SearchResult, WebSearchResult, WebSourceType,
-};
-
-/// Web search provider backed by the Tavily Search API.
-///
-/// Implements SearchResultProvider::web_search. All gem-related methods
-/// (search, index_gem, remove_gem, reindex_all) are no-ops.
-pub struct TavilyProvider {
-    api_key: String,
-    client: Client,
-}
-
-impl TavilyProvider {
-    pub fn new(api_key: String) -> Self {
-        eprintln!("Search/Tavily: Initialized with API key ({}...)", &api_key[..8.min(api_key.len())]);
-        Self {
-            api_key,
-            client: Client::new(),
-        }
-    }
-}
-
-// ── Tavily API request/response shapes ──
-
-#[derive(Serialize)]
-struct TavilySearchRequest {
-    query: String,
-    max_results: usize,
-    search_depth: String,
-    api_key: String,
-}
-
-#[derive(Deserialize)]
-struct TavilySearchResponse {
-    results: Vec<TavilyResult>,
-}
-
-#[derive(Deserialize)]
-struct TavilyResult {
-    title: String,
-    url: String,
-    content: String,
-    #[serde(default)]
-    published_date: Option<String>,
-}
-
-// ── Domain classification ──
-
-/// Classify a URL's domain into a WebSourceType.
-fn classify_source_type(url: &str) -> WebSourceType {
-    let url_lower = url.to_lowercase();
-    if url_lower.contains("youtube.com") || url_lower.contains("youtu.be") || url_lower.contains("vimeo.com") {
-        WebSourceType::Video
-    } else if url_lower.contains("arxiv.org") || url_lower.contains("scholar.google") || url_lower.contains("semanticscholar.org") || url_lower.contains("ieee.org") || url_lower.contains("acm.org") {
-        WebSourceType::Paper
-    } else if url_lower.contains("medium.com") || url_lower.contains("dev.to") || url_lower.contains("substack.com") || url_lower.contains("hashnode") || url_lower.contains("blog") {
-        WebSourceType::Article
-    } else {
-        WebSourceType::Other
-    }
-}
-
-/// Extract domain from a URL (e.g., "https://medium.com/foo" -> "medium.com").
-fn extract_domain(url: &str) -> String {
-    url.trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .split('/')
-        .next()
-        .unwrap_or(url)
-        .trim_start_matches("www.")
-        .to_string()
-}
-
-#[async_trait]
-impl SearchResultProvider for TavilyProvider {
-    async fn check_availability(&self) -> AvailabilityResult {
-        if self.api_key.is_empty() {
-            return AvailabilityResult {
-                available: false,
-                reason: Some("Tavily API key is empty".to_string()),
-            };
-        }
-        AvailabilityResult {
-            available: true,
-            reason: None,
-        }
-    }
-
-    // Gem search — not applicable for Tavily
-    async fn search(&self, _query: &str, _limit: usize) -> Result<Vec<SearchResult>, String> {
-        Ok(Vec::new())
-    }
-
-    async fn index_gem(&self, _gem_id: &str) -> Result<(), String> {
-        Ok(())
-    }
-
-    async fn remove_gem(&self, _gem_id: &str) -> Result<(), String> {
-        Ok(())
-    }
-
-    async fn reindex_all(&self) -> Result<usize, String> {
-        Ok(0)
-    }
-
-    // Web search — the real implementation
-    async fn web_search(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<WebSearchResult>, String> {
-        eprintln!("Search/Tavily: web_search query=\"{}\" limit={}", query, limit);
-
-        let request = TavilySearchRequest {
-            query: query.to_string(),
-            max_results: limit,
-            search_depth: "basic".to_string(),
-            api_key: self.api_key.clone(),
-        };
-
-        let response = self.client
-            .post("https://api.tavily.com/search")
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| format!("Tavily API request failed: {}", e))?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            eprintln!("Search/Tavily: API error {} — {}", status, body);
-            return Err(format!("Tavily API returned {}: {}", status, body));
-        }
-
-        let tavily_response: TavilySearchResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse Tavily response: {}", e))?;
-
-        let results: Vec<WebSearchResult> = tavily_response
-            .results
-            .into_iter()
-            .map(|r| {
-                let source_type = classify_source_type(&r.url);
-                let domain = extract_domain(&r.url);
-                WebSearchResult {
-                    title: r.title,
-                    url: r.url,
-                    snippet: r.content,
-                    source_type,
-                    domain,
-                    published_date: r.published_date,
-                }
-            })
-            .collect();
-
-        eprintln!("Search/Tavily: Returning {} results for \"{}\"", results.len(), query);
-        Ok(results)
-    }
-
-    fn supports_web_search(&self) -> bool {
-        true
-    }
-}
-```
-
-### `composite_provider.rs` — Delegating Wrapper (NEW)
+### `composite_provider.rs` — Delegating Wrapper (BUILT)
 
 **File**: `src/search/composite_provider.rs`
 
-**Responsibilities**: Wrap a gem provider and an optional web provider behind a single `SearchResultProvider` implementation.
+`CompositeSearchProvider` wrapping gem provider + optional web provider behind single `Arc<dyn SearchResultProvider>`.
 
-```rust
-use std::sync::Arc;
-use async_trait::async_trait;
-use crate::intelligence::AvailabilityResult;
-use super::provider::{
-    SearchResultProvider, SearchResult, WebSearchResult,
-};
+### `lib.rs` — Provider Registration (BUILT)
 
-/// Composite search provider that delegates gem search to one provider
-/// and web search to another.
-///
-/// Registered as the single Arc<dyn SearchResultProvider> in Tauri state.
-/// All existing commands (search_gems, check_search_availability, etc.)
-/// work unchanged — they call .search() which delegates to gem_provider.
-/// New research commands call .web_search() which delegates to web_provider.
-pub struct CompositeSearchProvider {
-    gem_provider: Arc<dyn SearchResultProvider>,
-    web_provider: Option<Arc<dyn SearchResultProvider>>,
-}
-
-impl CompositeSearchProvider {
-    pub fn new(
-        gem_provider: Arc<dyn SearchResultProvider>,
-        web_provider: Option<Arc<dyn SearchResultProvider>>,
-    ) -> Self {
-        let web_status = if web_provider.is_some() { "enabled" } else { "disabled" };
-        eprintln!("Search/Composite: Initialized (web search: {})", web_status);
-        Self {
-            gem_provider,
-            web_provider,
-        }
-    }
-}
-
-#[async_trait]
-impl SearchResultProvider for CompositeSearchProvider {
-    async fn check_availability(&self) -> AvailabilityResult {
-        self.gem_provider.check_availability().await
-    }
-
-    async fn search(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<SearchResult>, String> {
-        self.gem_provider.search(query, limit).await
-    }
-
-    async fn index_gem(&self, gem_id: &str) -> Result<(), String> {
-        self.gem_provider.index_gem(gem_id).await
-    }
-
-    async fn remove_gem(&self, gem_id: &str) -> Result<(), String> {
-        self.gem_provider.remove_gem(gem_id).await
-    }
-
-    async fn reindex_all(&self) -> Result<usize, String> {
-        self.gem_provider.reindex_all().await
-    }
-
-    async fn web_search(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<WebSearchResult>, String> {
-        match &self.web_provider {
-            Some(wp) => wp.web_search(query, limit).await,
-            None => Ok(Vec::new()),
-        }
-    }
-
-    fn supports_web_search(&self) -> bool {
-        self.web_provider
-            .as_ref()
-            .map_or(false, |wp| wp.supports_web_search())
-    }
-}
-```
-
-### `mod.rs` — Search Module Root (MODIFIED)
-
-**File**: `src/search/mod.rs`
-
-```rust
-pub mod provider;
-pub mod fts_provider;
-pub mod qmd_provider;
-pub mod tavily_provider;
-pub mod composite_provider;
-pub mod commands;
-
-pub use provider::{
-    SearchResultProvider,
-    SearchResult,
-    MatchType,
-    GemSearchResult,
-    WebSearchResult,
-    WebSourceType,
-    QmdSetupResult,
-    SetupProgressEvent,
-};
-pub use fts_provider::FtsResultProvider;
-pub use qmd_provider::QmdResultProvider;
-pub use tavily_provider::TavilyProvider;
-pub use composite_provider::CompositeSearchProvider;
-```
+Reads `tavily_api_key` from settings, builds optional `TavilyProvider`, wraps in `CompositeSearchProvider`, registered in Tauri state.
 
 ---
 
-## Agent Module
+## Agent Module (Phase 3 — TO BUILD)
 
 ### `project_chat.rs` — ProjectChatSource (NEW)
 
@@ -529,9 +262,6 @@ pub use composite_provider::CompositeSearchProvider;
 
 ```rust
 // ProjectChatSource — Project Conforms to Chatable
-//
-// This module makes projects chatbot-compatible by implementing the Chatable trait.
-// It assembles project metadata + gem content as context for the Chatbot engine.
 
 use async_trait::async_trait;
 use std::path::PathBuf;
@@ -542,10 +272,6 @@ use crate::gems::GemStore;
 use crate::intelligence::queue::IntelQueue;
 use crate::projects::ProjectStore;
 
-/// A project that can be chatted with.
-///
-/// Assembles project gem content as context. The Chatbot engine calls
-/// get_context() on every message to get fresh context.
 pub struct ProjectChatSource {
     project_id: String,
     project_title: String,
@@ -560,23 +286,16 @@ impl ProjectChatSource {
         project_store: Arc<dyn ProjectStore>,
         gem_store: Arc<dyn GemStore>,
     ) -> Self {
-        Self {
-            project_id,
-            project_title,
-            project_store,
-            gem_store,
-        }
+        Self { project_id, project_title, project_store, gem_store }
     }
 }
 
 #[async_trait]
 impl Chatable for ProjectChatSource {
     async fn get_context(&self, _intel_queue: &IntelQueue) -> Result<String, String> {
-        // Load project with its associated gems
         let detail = self.project_store.get(&self.project_id).await?;
         let project = &detail.project;
 
-        // Start building context with project metadata
         let mut context_parts: Vec<String> = Vec::new();
         context_parts.push(format!("# Project: {}", project.title));
 
@@ -589,24 +308,19 @@ impl Chatable for ProjectChatSource {
 
         context_parts.push(format!("\n## Gems ({} total)\n", detail.gems.len()));
 
-        // Assemble gem content
         for gem_preview in &detail.gems {
             let mut gem_section = format!("### {}", gem_preview.title);
 
-            // Try to load full gem for ai_enrichment (summary)
             if let Ok(Some(full_gem)) = self.gem_store.get(&gem_preview.id).await {
                 if let Some(ref desc) = full_gem.description {
                     gem_section.push_str(&format!("\n{}", desc));
                 }
-
-                // Extract summary from ai_enrichment
                 if let Some(ref enrichment) = full_gem.ai_enrichment {
                     if let Some(summary) = enrichment.get("summary").and_then(|v| v.as_str()) {
                         gem_section.push_str(&format!("\n**Summary:** {}", summary));
                     }
                 }
             }
-
             context_parts.push(gem_section);
         }
 
@@ -618,17 +332,15 @@ impl Chatable for ProjectChatSource {
     }
 
     fn session_dir(&self) -> PathBuf {
-        let app_data = dirs::data_dir()
+        dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("com.jarvis.app")
             .join("projects")
             .join(&self.project_id)
-            .join("chat_sessions");
-        app_data
+            .join("chat_sessions")
     }
 
     async fn needs_preparation(&self) -> bool {
-        // Project context is assembled on the fly from gems — no expensive generation needed
         false
     }
 }
@@ -638,15 +350,10 @@ impl Chatable for ProjectChatSource {
 
 **File**: `src/agents/project_agent.rs`
 
-**Responsibilities**: Persistent agent that manages research, summarization, and chat for projects. Holds all required providers and a `Chatbot` instance.
+**Responsibilities**: Persistent agent with two-phase research (suggest → execute), summarization, and chat. The key difference from the original design: `research()` is split into `suggest_topics()` and `run_research(topics)`, giving the user control over what gets searched.
 
 ```rust
 // ProjectResearchAgent — Research, Summarize, and Chat for Projects
-//
-// This agent manages all project intelligence capabilities:
-// - Research: LLM topic generation + web search + gem suggestions
-// - Summarize: LLM summary of all project gems
-// - Chat: Conversational Q&A over project content via Chatbot + ProjectChatSource
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -665,12 +372,10 @@ use crate::search::{
 /// Combined results from both research pipelines.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectResearchResults {
-    /// External resources found via web search
     pub web_results: Vec<WebSearchResult>,
-    /// Existing gems relevant to the project
     pub suggested_gems: Vec<GemSearchResult>,
-    /// The search topics the LLM generated
-    pub topics_generated: Vec<String>,
+    /// The topics that were actually searched (user-curated)
+    pub topics_searched: Vec<String>,
 }
 
 // ── LLM Prompts ──
@@ -698,10 +403,6 @@ Rules:
 - Use markdown formatting
 - If there are few or no resources, acknowledge this and suggest next steps"#;
 
-/// Persistent agent for project research, summarization, and chat.
-///
-/// Registered in Tauri state as Arc<TokioMutex<ProjectResearchAgent>>.
-/// All actions can be invoked independently on any project at any time.
 pub struct ProjectResearchAgent {
     project_store: Arc<dyn ProjectStore>,
     gem_store: Arc<dyn GemStore>,
@@ -709,7 +410,6 @@ pub struct ProjectResearchAgent {
     search_provider: Arc<dyn SearchResultProvider>,
     intel_queue: Arc<IntelQueue>,
     chatbot: Chatbot,
-    /// Maps session_id -> ProjectChatSource for active chat sessions
     chat_sources: HashMap<String, ProjectChatSource>,
 }
 
@@ -734,21 +434,21 @@ impl ProjectResearchAgent {
     }
 
     // ────────────────────────────────────────────
-    // Research
+    // Phase A: Topic Suggestion
     // ────────────────────────────────────────────
 
-    /// Run research pipelines for a project: LLM topic generation + web search + gem suggestions.
+    /// Generate research topic suggestions for a project.
     ///
-    /// Returns combined results from both pipelines. Gracefully degrades if web search
-    /// is unavailable — gem suggestions still work.
-    pub async fn research(&self, project_id: &str) -> Result<ProjectResearchResults, String> {
-        eprintln!("Projects/Research: Starting research for project {}", project_id);
+    /// Called when the research chat opens. Returns 3-5 topic strings that the
+    /// frontend renders as the agent's opening message. The user can then
+    /// refine these before triggering the actual search.
+    pub async fn suggest_topics(&self, project_id: &str) -> Result<Vec<String>, String> {
+        eprintln!("Projects/Research: Suggesting topics for project {}", project_id);
 
-        // 1. Load project metadata
         let detail = self.project_store.get(project_id).await?;
         let project = &detail.project;
 
-        // 2. Build context string for LLM
+        // Build context string for LLM
         let mut context_parts = vec![format!("Project: {}", project.title)];
         if let Some(ref desc) = project.description {
             context_parts.push(format!("Description: {}", desc));
@@ -757,15 +457,14 @@ impl ProjectResearchAgent {
             context_parts.push(format!("Objective: {}", obj));
         }
         let context = context_parts.join("\n");
-        eprintln!("Projects/Research: Generating topics for '{}'", project.title);
 
-        // 3. LLM generates search topics
+        // LLM generates topics
         let topics_raw = self.intel_provider.chat(&[
             ("system".to_string(), TOPIC_GENERATION_PROMPT.to_string()),
             ("user".to_string(), context),
         ]).await?;
 
-        // Parse JSON array from LLM response (strip markdown code fences if present)
+        // Parse JSON array (strip markdown code fences if present)
         let topics_cleaned = topics_raw
             .trim()
             .trim_start_matches("```json")
@@ -775,9 +474,30 @@ impl ProjectResearchAgent {
 
         let topics: Vec<String> = serde_json::from_str(topics_cleaned)
             .map_err(|e| format!("Failed to parse LLM topics: {} — raw: {}", e, topics_raw))?;
-        eprintln!("Projects/Research: {} topics generated: {:?}", topics.len(), topics);
 
-        // 4. Web search for each topic
+        eprintln!("Projects/Research: {} topics suggested: {:?}", topics.len(), topics);
+        Ok(topics)
+    }
+
+    // ────────────────────────────────────────────
+    // Phase B: Execute Research
+    // ────────────────────────────────────────────
+
+    /// Execute research on user-curated topics.
+    ///
+    /// Runs web search for each topic (if Tavily available), deduplicates,
+    /// then searches for relevant gems. Returns combined results.
+    pub async fn run_research(
+        &self,
+        project_id: &str,
+        topics: Vec<String>,
+    ) -> Result<ProjectResearchResults, String> {
+        eprintln!("Projects/Research: Running research for project {} with {} topics", project_id, topics.len());
+
+        let detail = self.project_store.get(project_id).await?;
+        let project = &detail.project;
+
+        // Web search for each topic
         let mut web_results: Vec<WebSearchResult> = Vec::new();
         if self.search_provider.supports_web_search() {
             for topic in &topics {
@@ -801,11 +521,11 @@ impl ProjectResearchAgent {
             eprintln!("Projects/Research: Web search not available, skipping");
         }
 
-        // 5. Gem search
+        // Gem search — find existing gems relevant to the project
         let gem_results = self.search_provider.search(&project.title, 20).await?;
         eprintln!("Projects/Research: {} raw gem search results", gem_results.len());
 
-        // Enrich with GemPreview data (same pattern as search_gems command)
+        // Enrich with full gem data
         let mut suggested_gems: Vec<GemSearchResult> = Vec::new();
         for result in gem_results {
             if let Ok(Some(gem)) = self.gem_store.get(&result.gem_id).await {
@@ -843,7 +563,7 @@ impl ProjectResearchAgent {
         Ok(ProjectResearchResults {
             web_results,
             suggested_gems,
-            topics_generated: topics,
+            topics_searched: topics,
         })
     }
 
@@ -851,14 +571,9 @@ impl ProjectResearchAgent {
     // Summarize
     // ────────────────────────────────────────────
 
-    /// Generate a summary of all gems in a project.
-    ///
-    /// Assembles all gem content (titles, descriptions, summaries) and asks the LLM
-    /// to produce an executive summary covering themes, findings, and gaps.
     pub async fn summarize(&self, project_id: &str) -> Result<String, String> {
         eprintln!("Projects/Research: Starting summarization for project {}", project_id);
 
-        // 1. Load project + gems
         let detail = self.project_store.get(project_id).await?;
         let project = &detail.project;
 
@@ -866,7 +581,6 @@ impl ProjectResearchAgent {
             return Ok("This project has no gems yet. Add some resources to generate a summary.".to_string());
         }
 
-        // 2. Assemble context from all gems
         let mut context_parts: Vec<String> = Vec::new();
         context_parts.push(format!("Project: {}", project.title));
         if let Some(ref desc) = project.description {
@@ -879,7 +593,6 @@ impl ProjectResearchAgent {
 
         for gem_preview in &detail.gems {
             let mut gem_text = format!("\n--- {} ---", gem_preview.title);
-
             if let Ok(Some(full_gem)) = self.gem_store.get(&gem_preview.id).await {
                 if let Some(ref desc) = full_gem.description {
                     gem_text.push_str(&format!("\n{}", desc));
@@ -896,14 +609,10 @@ impl ProjectResearchAgent {
                     }
                 }
             }
-
             context_parts.push(gem_text);
         }
 
         let context = context_parts.join("\n");
-        eprintln!("Projects/Research: Summarizing {} gems for '{}'", detail.gems.len(), project.title);
-
-        // 3. Ask LLM to summarize
         let summary = self.intel_provider.chat(&[
             ("system".to_string(), SUMMARIZE_PROMPT.to_string()),
             ("user".to_string(), context),
@@ -917,18 +626,12 @@ impl ProjectResearchAgent {
     // Chat
     // ────────────────────────────────────────────
 
-    /// Start a chat session for a project.
-    ///
-    /// Creates a ProjectChatSource and starts a Chatbot session.
-    /// Returns the session_id for subsequent send_chat_message calls.
     pub async fn start_chat(&mut self, project_id: &str) -> Result<String, String> {
         eprintln!("Projects/Research: Starting chat for project {}", project_id);
 
-        // Load project to get title
         let detail = self.project_store.get(project_id).await?;
         let project_title = detail.project.title.clone();
 
-        // Create chat source
         let source = ProjectChatSource::new(
             project_id.to_string(),
             project_title,
@@ -936,19 +639,13 @@ impl ProjectResearchAgent {
             Arc::clone(&self.gem_store),
         );
 
-        // Start session via Chatbot
         let session_id = self.chatbot.start_session(&source).await?;
-
-        // Store source for use in send_chat_message
         self.chat_sources.insert(session_id.clone(), source);
 
         eprintln!("Projects/Research: Chat session started: {}", session_id);
         Ok(session_id)
     }
 
-    /// Send a message in a project chat session.
-    ///
-    /// Delegates to Chatbot::send_message with the ProjectChatSource as context.
     pub async fn send_chat_message(
         &mut self,
         session_id: &str,
@@ -957,20 +654,13 @@ impl ProjectResearchAgent {
         let source = self.chat_sources.get(session_id)
             .ok_or_else(|| format!("Chat source not found for session {}", session_id))?;
 
-        self.chatbot.send_message(
-            session_id,
-            message,
-            source,
-            &self.intel_queue,
-        ).await
+        self.chatbot.send_message(session_id, message, source, &self.intel_queue).await
     }
 
-    /// Get message history for a project chat session.
     pub fn get_chat_history(&self, session_id: &str) -> Result<Vec<ChatMessage>, String> {
         self.chatbot.get_history(session_id)
     }
 
-    /// End a project chat session.
     pub fn end_chat(&mut self, session_id: &str) {
         self.chatbot.end_session(session_id);
         self.chat_sources.remove(session_id);
@@ -994,13 +684,11 @@ pub mod project_agent;
 
 ---
 
-## Tauri Commands
+## Tauri Commands (Phase 4)
 
 ### `commands.rs` — Project Agent Commands (MODIFIED)
 
 **File**: `src/projects/commands.rs` (add to existing file)
-
-**Responsibilities**: Thin Tauri command wrappers that delegate to `ProjectResearchAgent`.
 
 ```rust
 // ── Add these imports to existing commands.rs ──
@@ -1011,14 +699,25 @@ use crate::agents::chatbot::ChatMessage;
 
 // ── New commands ──
 
-/// Run research pipelines for a project.
+/// Suggest research topics for a project (Phase A of research flow).
 #[tauri::command]
-pub async fn get_project_research(
+pub async fn suggest_project_topics(
     project_id: String,
+    agent: State<'_, Arc<TokioMutex<ProjectResearchAgent>>>,
+) -> Result<Vec<String>, String> {
+    let agent = agent.lock().await;
+    agent.suggest_topics(&project_id).await
+}
+
+/// Execute research on user-curated topics (Phase B of research flow).
+#[tauri::command]
+pub async fn run_project_research(
+    project_id: String,
+    topics: Vec<String>,
     agent: State<'_, Arc<TokioMutex<ProjectResearchAgent>>>,
 ) -> Result<ProjectResearchResults, String> {
     let agent = agent.lock().await;
-    agent.research(&project_id).await
+    agent.run_research(&project_id, topics).await
 }
 
 /// Generate a summary of all gems in a project.
@@ -1074,97 +773,48 @@ pub async fn end_project_chat(
 }
 ```
 
----
+### Provider & Agent Registration in `lib.rs`
 
-## Provider & Agent Registration
-
-### In `lib.rs` — Modified Setup
-
-Replace the current search provider initialization block with:
-
-```rust
-// ── Search Provider Setup ──
-
-// Read search settings
-let (search_enabled, search_accuracy, tavily_api_key) = {
-    let manager = app.state::<Arc<RwLock<SettingsManager>>>();
-    let settings = manager.read().expect("Failed to acquire settings read lock").get();
-    (
-        settings.search.semantic_search_enabled,
-        settings.search.semantic_search_accuracy,
-        settings.search.tavily_api_key.clone(),
-    )
-};
-
-// Build gem search provider (existing logic, unchanged)
-let gem_provider: Arc<dyn SearchResultProvider> = if search_enabled {
-    match tauri::async_runtime::block_on(QmdResultProvider::find_qmd_binary()) {
-        Some(qmd_path) => {
-            let knowledge_path = app.path().app_data_dir()
-                .expect("Failed to get app data dir")
-                .join("knowledge");
-            let qmd = QmdResultProvider::new(qmd_path.clone(), knowledge_path, search_accuracy);
-
-            let availability = tauri::async_runtime::block_on(qmd.check_availability());
-            if availability.available {
-                eprintln!("Search: Using QMD semantic search provider ({})", qmd_path.display());
-                Arc::new(qmd)
-            } else {
-                eprintln!("Search: QMD unavailable ({}), falling back to FTS5",
-                    availability.reason.unwrap_or_else(|| "unknown".to_string()));
-                Arc::new(FtsResultProvider::new(gem_store_arc.clone()))
-            }
-        }
-        None => {
-            eprintln!("Search: QMD binary not found, falling back to FTS5");
-            Arc::new(FtsResultProvider::new(gem_store_arc.clone()))
-        }
-    }
-} else {
-    eprintln!("Search: Using FTS5 keyword search provider (default)");
-    Arc::new(FtsResultProvider::new(gem_store_arc.clone()))
-};
-
-// Build web search provider from existing settings (NEW)
-let web_provider: Option<Arc<dyn SearchResultProvider>> = tavily_api_key
-    .as_ref()
-    .filter(|k| !k.is_empty())
-    .map(|api_key| {
-        eprintln!("Search: Tavily web search enabled");
-        Arc::new(search::TavilyProvider::new(api_key.clone())) as Arc<dyn SearchResultProvider>
-    });
-
-if web_provider.is_none() {
-    eprintln!("Search: Tavily web search disabled (no API key in settings)");
-}
-
-// Wrap in composite (NEW)
-let search_provider: Arc<dyn SearchResultProvider> = Arc::new(
-    search::CompositeSearchProvider::new(gem_provider, web_provider)
-);
-app.manage(search_provider.clone());
-```
-
-Add after the search provider setup:
+Add after existing search provider setup (line ~350):
 
 ```rust
 // ── Project Research Agent Setup (NEW) ──
+// Clone search_provider BEFORE app.manage consumes it
+let search_provider_for_agent = search_provider.clone();
+app.manage(search_provider);
 
 let project_agent = agents::project_agent::ProjectResearchAgent::new(
-    project_store_arc.clone(),    // Arc<dyn ProjectStore>
-    gem_store_arc.clone(),        // Arc<dyn GemStore>
-    intel_provider_arc.clone(),   // Arc<dyn IntelProvider>
-    search_provider.clone(),      // Arc<dyn SearchResultProvider>
+    project_store_arc.clone(),
+    gem_store_arc.clone(),
+    intel_provider.clone(),       // Arc<dyn IntelProvider>
+    search_provider_for_agent,    // Arc<dyn SearchResultProvider>
     intel_queue_arc.clone(),      // Arc<IntelQueue>
 );
 app.manage(Arc::new(tokio::sync::Mutex::new(project_agent)));
+```
+
+**Note on `intel_queue`:** Currently `intel_queue` is created as a bare `IntelQueue` and registered via `app.manage(intel_queue)`. For the agent to hold an `Arc<IntelQueue>`, we need to wrap it in `Arc` before registration. Change:
+```rust
+// Before (current):
+let intel_queue = tauri::async_runtime::block_on(async {
+    intelligence::IntelQueue::new(intel_provider.clone())
+});
+app.manage(intel_queue);
+
+// After:
+let intel_queue = tauri::async_runtime::block_on(async {
+    intelligence::IntelQueue::new(intel_provider.clone())
+});
+let intel_queue_arc = Arc::new(intel_queue);
+app.manage(intel_queue_arc.clone());
 ```
 
 ### Register Commands in `generate_handler!`
 
 ```rust
 // Add to generate_handler![] in lib.rs:
-projects::commands::get_project_research,
+projects::commands::suggest_project_topics,
+projects::commands::run_project_research,
 projects::commands::get_project_summary,
 projects::commands::start_project_chat,
 projects::commands::send_project_chat_message,
@@ -1174,7 +824,7 @@ projects::commands::end_project_chat,
 
 ---
 
-## Frontend Changes
+## Frontend Changes (Phases 5-7)
 
 ### TypeScript Types
 
@@ -1195,213 +845,434 @@ export interface WebSearchResult {
 export interface ProjectResearchResults {
   web_results: WebSearchResult[];
   suggested_gems: GemSearchResult[];
-  topics_generated: string[];
+  topics_searched: string[];
 }
 ```
 
-### ProjectResearchPanel Component
+### ProjectResearchChat Component (NEW)
+
+**File**: `src/components/ProjectResearchChat.tsx`
+
+This is the main new component — a chat interface with rich message rendering for research results. It follows the existing `ChatPanel.tsx` pattern but adds:
+1. Auto-suggests topics on mount (agent's opening message)
+2. Renders web result cards and gem suggestion cards inline in chat
+3. Handles "Run Research" action with user-curated topics
+
+**Message types in the chat:**
+- **Text messages** — standard user/assistant text bubbles (same CSS as `ChatPanel`)
+- **Topic suggestion messages** — assistant bubble with numbered topic chips and remove buttons + "Search" button
+- **Research result messages** — assistant bubble with embedded web cards and gem cards
+- **System messages** — small centered text for actions like "Removed topic: X"
 
 ```tsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-shell';
 import type { ProjectResearchResults, WebSearchResult, GemSearchResult } from '../state/types';
 
-interface ProjectResearchPanelProps {
-  projectId: string;
-  onGemsAdded: () => void;
+interface ChatMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  researchResults?: ProjectResearchResults;
+  suggestedTopics?: string[];
 }
 
-export function ProjectResearchPanel({ projectId, onGemsAdded }: ProjectResearchPanelProps) {
-  const [loading, setLoading] = useState(true);
-  const [results, setResults] = useState<ProjectResearchResults | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [addedGemIds, setAddedGemIds] = useState<Set<string>>(new Set());
+interface ProjectResearchChatProps {
+  projectId: string;
+  projectTitle: string;
+  onGemsAdded?: () => void;
+}
 
+export function ProjectResearchChat({
+  projectId,
+  projectTitle,
+  onGemsAdded,
+}: ProjectResearchChatProps) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [topics, setTopics] = useState<string[]>([]);
+  const [addedGemIds, setAddedGemIds] = useState<Set<string>>(new Set());
+  const [initializing, setInitializing] = useState(true);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to latest message
   useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, loading]);
+
+  // Auto-suggest topics on mount
+  useEffect(() => {
+    let cancelled = false;
+    const suggestTopics = async () => {
+      setInitializing(true);
+      try {
+        const suggested = await invoke<string[]>('suggest_project_topics', { projectId });
+        if (cancelled) return;
+        setTopics(suggested);
+        setMessages([{
+          role: 'assistant',
+          content: `I see your project is about **${projectTitle}**. Here are some research topics I'd suggest:`,
+          suggestedTopics: suggested,
+        }]);
+      } catch (err) {
+        if (cancelled) return;
+        setMessages([{
+          role: 'assistant',
+          content: `I couldn't generate topics: ${err}. You can type your own research topics below.`,
+        }]);
+      } finally {
+        if (!cancelled) setInitializing(false);
+      }
+    };
+    suggestTopics();
+    return () => { cancelled = true; };
+  }, [projectId, projectTitle]);
+
+  const handleRunResearch = useCallback(async (researchTopics: string[]) => {
+    if (researchTopics.length === 0) return;
+
     setLoading(true);
-    setError(null);
-    invoke<ProjectResearchResults>('get_project_research', { projectId })
-      .then(setResults)
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false));
+    setMessages(prev => [
+      ...prev,
+      { role: 'user', content: `Search for: ${researchTopics.join(', ')}` },
+      { role: 'assistant', content: `Searching ${researchTopics.length} topics...` },
+    ]);
+
+    try {
+      const results = await invoke<ProjectResearchResults>('run_project_research', {
+        projectId,
+        topics: researchTopics,
+      });
+
+      // Replace the "Searching..." placeholder with actual results
+      setMessages(prev => {
+        const updated = [...prev];
+        updated[updated.length - 1] = {
+          role: 'assistant',
+          content: `Found ${results.web_results.length} web resources and ${results.suggested_gems.length} matching gems from your library.`,
+          researchResults: results,
+        };
+        return updated;
+      });
+    } catch (err) {
+      setMessages(prev => {
+        const updated = [...prev];
+        updated[updated.length - 1] = {
+          role: 'assistant',
+          content: `Research failed: ${err}. You can try again or refine your topics.`,
+        };
+        return updated;
+      });
+    } finally {
+      setLoading(false);
+    }
   }, [projectId]);
 
-  const handleOpenUrl = (url: string) => {
-    open(url);
+  const handleSendMessage = async () => {
+    if (!input.trim() || loading) return;
+    const userMessage = input.trim();
+    setInput('');
+
+    // Simple intent detection (v1): keywords trigger actions
+    const lower = userMessage.toLowerCase();
+
+    if (lower.includes('search') || lower.includes('go ahead') || lower.includes('find')) {
+      await handleRunResearch(topics);
+      return;
+    }
+
+    if (lower.includes('summarize') || lower.includes('summary')) {
+      setLoading(true);
+      setMessages(prev => [
+        ...prev,
+        { role: 'user', content: userMessage },
+        { role: 'assistant', content: 'Summarizing your project...' },
+      ]);
+
+      try {
+        const summary = await invoke<string>('get_project_summary', { projectId });
+        setMessages(prev => {
+          const updated = [...prev];
+          updated[updated.length - 1] = { role: 'assistant', content: summary };
+          return updated;
+        });
+      } catch (err) {
+        setMessages(prev => {
+          const updated = [...prev];
+          updated[updated.length - 1] = { role: 'assistant', content: `Failed to summarize: ${err}` };
+          return updated;
+        });
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    // Default: treat as a new topic to add
+    setTopics(prev => [...prev, userMessage]);
+    setMessages(prev => [
+      ...prev,
+      { role: 'user', content: userMessage },
+      {
+        role: 'assistant',
+        content: `Added "${userMessage}" to your research topics. Say "search" when you're ready.`,
+      },
+    ]);
+  };
+
+  const handleRemoveTopic = (index: number) => {
+    const removed = topics[index];
+    setTopics(prev => prev.filter((_, i) => i !== index));
+    setMessages(prev => [
+      ...prev,
+      { role: 'system', content: `Removed topic: "${removed}"` },
+    ]);
   };
 
   const handleAddGem = async (gemId: string) => {
     try {
       await invoke('add_gems_to_project', { projectId, gemIds: [gemId] });
       setAddedGemIds(prev => new Set(prev).add(gemId));
-      onGemsAdded();
+      onGemsAdded?.();
     } catch (err) {
-      console.error('Failed to add gem to project:', err);
+      console.error('Failed to add gem:', err);
     }
   };
 
-  if (loading) {
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
+    }
+  };
+
+  if (initializing) {
     return (
-      <div className="research-loading">
-        <div className="research-spinner" />
-        <p>Researching your project...</p>
-        <p className="research-subtext">
-          Finding relevant articles, papers, videos, and gems...
-        </p>
+      <div className="research-chat">
+        <div className="research-chat-loading">
+          <div className="spinner" />
+          <span>Analyzing your project...</span>
+        </div>
       </div>
     );
   }
-
-  if (error) {
-    return (
-      <div className="research-error">
-        <p>Research failed: {error}</p>
-        <p className="research-subtext">You can still add gems manually.</p>
-      </div>
-    );
-  }
-
-  if (!results) return null;
 
   return (
-    <div className="research-panel">
-      {/* Web Results Section */}
-      <div className="research-section">
-        <h4 className="research-section-title">Suggested from the web</h4>
-        {results.web_results.length === 0 ? (
-          <p className="research-empty">
-            {results.topics_generated.length > 0
-              ? 'No web resources found. Try refining your project description.'
-              : 'Web search not configured.'}
-          </p>
-        ) : (
-          <div className="research-web-results">
-            {results.web_results.map((result, i) => (
-              <div
-                key={i}
-                className="web-result-card"
-                onClick={() => handleOpenUrl(result.url)}
-              >
-                <div className="web-result-header">
-                  <span className={`source-type-badge source-${result.source_type.toLowerCase()}`}>
-                    {result.source_type}
-                  </span>
-                  <span className="web-result-domain">{result.domain}</span>
-                </div>
-                <div className="web-result-title">{result.title}</div>
-                <div className="web-result-snippet">{result.snippet}</div>
+    <div className="research-chat">
+      <div className="research-chat-messages">
+        {messages.map((msg, index) => (
+          <div key={index} className={`chat-message chat-${msg.role}`}>
+            {msg.role !== 'system' ? (
+              <div className="chat-bubble">
+                <div className="chat-text">{msg.content}</div>
+
+                {/* Topic chips with remove buttons */}
+                {msg.suggestedTopics && (
+                  <div className="research-topics-list">
+                    {topics.map((topic, i) => (
+                      <div key={i} className="research-topic-chip">
+                        <span>{i + 1}. {topic}</span>
+                        <button className="topic-remove" onClick={() => handleRemoveTopic(i)}>x</button>
+                      </div>
+                    ))}
+                    <button
+                      className="action-button research-go-button"
+                      onClick={() => handleRunResearch(topics)}
+                      disabled={topics.length === 0 || loading}
+                    >
+                      Search ({topics.length} topics)
+                    </button>
+                  </div>
+                )}
+
+                {/* Web result cards inline in chat */}
+                {msg.researchResults && msg.researchResults.web_results.length > 0 && (
+                  <div className="research-section">
+                    <h4 className="research-section-title">From the web</h4>
+                    {msg.researchResults.web_results.map((result, i) => (
+                      <div key={i} className="web-result-card" onClick={() => open(result.url)}>
+                        <div className="web-result-header">
+                          <span className={`source-type-badge source-${result.source_type.toLowerCase()}`}>
+                            {result.source_type}
+                          </span>
+                          <span className="web-result-domain">{result.domain}</span>
+                        </div>
+                        <div className="web-result-title">{result.title}</div>
+                        <div className="web-result-snippet">{result.snippet}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Gem suggestion cards inline in chat */}
+                {msg.researchResults && msg.researchResults.suggested_gems.length > 0 && (
+                  <div className="research-section">
+                    <h4 className="research-section-title">From your library</h4>
+                    {msg.researchResults.suggested_gems.map((gem) => (
+                      <div key={gem.id} className="research-gem-card">
+                        <div className="gem-info">
+                          <span className={`source-badge ${gem.source_type.toLowerCase()}`}>{gem.source_type}</span>
+                          <span className="gem-title">{gem.title}</span>
+                        </div>
+                        <button
+                          className={`research-add-gem ${addedGemIds.has(gem.id) ? 'added' : ''}`}
+                          onClick={() => handleAddGem(gem.id)}
+                          disabled={addedGemIds.has(gem.id)}
+                        >
+                          {addedGemIds.has(gem.id) ? 'Added' : '+ Add'}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-            ))}
+            ) : (
+              <div className="chat-system-msg">{msg.content}</div>
+            )}
+          </div>
+        ))}
+
+        {loading && (
+          <div className="chat-message chat-assistant">
+            <div className="chat-bubble thinking">Thinking...</div>
           </div>
         )}
+
+        <div ref={messagesEndRef} />
       </div>
 
-      {/* Gem Suggestions Section */}
-      <div className="research-section">
-        <h4 className="research-section-title">From your gem library</h4>
-        {results.suggested_gems.length === 0 ? (
-          <p className="research-empty">No matching gems in your library yet.</p>
-        ) : (
-          <div className="research-gem-results">
-            {results.suggested_gems.map((gem) => (
-              <div key={gem.id} className="research-gem-card">
-                <div className="gem-card">
-                  <div className="gem-card-header">
-                    <span className={`source-badge ${gem.source_type.toLowerCase()}`}>
-                      {gem.source_type}
-                    </span>
-                    <span className="gem-date">
-                      {new Date(gem.captured_at).toLocaleDateString()}
-                    </span>
-                  </div>
-                  <div className="gem-title">{gem.title}</div>
-                  {gem.description && (
-                    <div className="gem-description">{gem.description}</div>
-                  )}
-                </div>
-                <button
-                  className={`research-add-gem ${addedGemIds.has(gem.id) ? 'added' : ''}`}
-                  onClick={() => handleAddGem(gem.id)}
-                  disabled={addedGemIds.has(gem.id)}
-                >
-                  {addedGemIds.has(gem.id) ? 'Added' : '+ Add'}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+      <div className="chat-input-bar">
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyPress={handleKeyPress}
+          placeholder="Add a topic, say 'search', or ask a question..."
+          disabled={loading}
+          className="chat-input"
+        />
+        <button
+          onClick={handleSendMessage}
+          disabled={!input.trim() || loading}
+          className="chat-send-button"
+        >
+          Send
+        </button>
       </div>
     </div>
   );
 }
 ```
 
-### ProjectGemList Integration
+### RightPanel Integration (MODIFIED)
 
-Add to the existing `ProjectGemList` component:
+**File**: `src/components/RightPanel.tsx`
+
+When `activeNav === 'projects'`, the RightPanel shows the Research Agent chat. This replaces the current placeholder ("Select a gem to view details").
+
+Add to RightPanel props:
+```typescript
+selectedProjectId?: string | null;
+selectedProjectTitle?: string | null;
+onProjectGemsChanged?: () => void;
+```
+
+Replace the `activeNav === 'projects'` block (lines 402-479) with:
 
 ```tsx
-// In ProjectGemList state
-const [showResearch, setShowResearch] = useState(false);
-const [projectSummary, setProjectSummary] = useState<string | null>(null);
-const [summarizing, setSummarizing] = useState(false);
-
-// Detect newly created project (0 gems) — auto-show research
-useEffect(() => {
-  if (detail && detail.gem_count === 0) {
-    setShowResearch(true);
+if (activeNav === 'projects') {
+  // No project selected
+  if (!selectedProjectId) {
+    return (
+      <div className="right-panel" style={style}>
+        <div className="right-panel-placeholder">
+          Select a project to start researching
+        </div>
+      </div>
+    );
   }
-}, [detail?.project.id]);
 
-// Summarize handler
-const handleSummarize = async () => {
-  setSummarizing(true);
-  try {
-    const summary = await invoke<string>('get_project_summary', { projectId });
-    setProjectSummary(summary);
-  } catch (e) {
-    console.error('Summarization failed:', e);
-  } finally {
-    setSummarizing(false);
+  // Project selected + gem selected → show tabs: Research | Detail
+  if (selectedGemId) {
+    return (
+      <div className="right-panel" style={style}>
+        <div className="record-tabs-view">
+          <div className="tab-buttons">
+            <button
+              className={`tab-button ${activeTab === 'chat' ? 'active' : ''}`}
+              onClick={() => handleTabChange('chat')}
+            >
+              Research
+            </button>
+            <button
+              className={`tab-button ${activeTab === 'transcript' ? 'active' : ''}`}
+              onClick={() => handleTabChange('transcript')}
+            >
+              Detail
+            </button>
+          </div>
+          <div className="tab-content">
+            {activeTab === 'chat' ? (
+              <ProjectResearchChat
+                projectId={selectedProjectId}
+                projectTitle={selectedProjectTitle || ''}
+                onGemsAdded={onProjectGemsChanged}
+              />
+            ) : (
+              <GemDetailPanel
+                gemId={selectedGemId}
+                onDelete={onDeleteGem}
+                onTranscribe={onTranscribeGem}
+                onEnrich={onEnrichGem}
+                aiAvailable={aiAvailable}
+                onOpenKnowledgeFile={handleOpenKnowledgeFile}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+    );
   }
-};
 
-// In the toolbar (alongside search input and "+ Add Gems")
-<button
-  className="action-button"
-  onClick={() => setShowResearch(true)}
-  disabled={showResearch}
->
-  Research
-</button>
-<button
-  className="action-button"
-  onClick={handleSummarize}
-  disabled={summarizing}
->
-  {summarizing ? 'Summarizing...' : 'Summarize'}
-</button>
-
-// In the gem list area, above the gems
-{projectSummary && (
-  <div className="project-summary-panel">
-    <div className="summary-header">
-      <h4>Project Summary</h4>
-      <button onClick={() => setProjectSummary(null)}>Dismiss</button>
+  // Project selected, no gem selected → research chat full-height
+  return (
+    <div className="right-panel" style={style}>
+      <ProjectResearchChat
+        projectId={selectedProjectId}
+        projectTitle={selectedProjectTitle || ''}
+        onGemsAdded={onProjectGemsChanged}
+      />
     </div>
-    <div className="summary-content">{projectSummary}</div>
-  </div>
-)}
-{showResearch && (
-  <ProjectResearchPanel
-    projectId={projectId}
-    onGemsAdded={() => {
-      loadProject(projectId);
-      onProjectsChanged();
-    }}
-  />
-)}
+  );
+}
+```
+
+### App.tsx Integration
+
+Lift `selectedProjectId` state from `ProjectsContainer` up to `App.tsx` so it can be passed to both `ProjectsContainer` and `RightPanel`. This follows the existing pattern used for `selectedGemId`.
+
+```tsx
+// In App.tsx state:
+const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+const [selectedProjectTitle, setSelectedProjectTitle] = useState<string | null>(null);
+
+// Pass to ProjectsContainer:
+<ProjectsContainer
+  onGemSelect={handleGemSelect}
+  onProjectSelect={(id, title) => {
+    setSelectedProjectId(id);
+    setSelectedProjectTitle(title);
+  }}
+/>
+
+// Pass to RightPanel:
+<RightPanel
+  // ... existing props ...
+  selectedProjectId={selectedProjectId}
+  selectedProjectTitle={selectedProjectTitle}
+  onProjectGemsChanged={() => { /* refresh project gem list */ }}
+/>
 ```
 
 ---
@@ -1411,78 +1282,105 @@ const handleSummarize = async () => {
 Add to `App.css`:
 
 ```css
-/* Research Panel */
-.research-panel {
-  padding: 16px;
-  border-bottom: 1px solid var(--border-color, #333);
+/* ── Research Chat ── */
+
+.research-chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
 
-.research-loading {
+.research-chat-loading {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 48px 16px;
+  height: 100%;
+  gap: 12px;
   color: var(--text-secondary, #aaa);
 }
 
-.research-spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid var(--border-color, #333);
-  border-top-color: var(--accent-color, #3b82f6);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  margin-bottom: 16px;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-.research-subtext {
-  font-size: 12px;
-  color: var(--text-muted, #666);
-  margin-top: 4px;
-}
-
-.research-error {
+.research-chat-messages {
+  flex: 1;
+  overflow-y: auto;
   padding: 16px;
-  color: var(--error-color, #ef4444);
+}
+
+/* ── Topic Chips ── */
+
+.research-topics-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.research-topic-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-color, #333);
   font-size: 13px;
 }
 
-/* Research Sections */
+.topic-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted, #666);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 6px;
+}
+
+.topic-remove:hover {
+  color: var(--error-color, #ef4444);
+}
+
+.research-go-button {
+  margin-top: 8px;
+  align-self: flex-end;
+}
+
+/* ── System Messages ── */
+
+.chat-system-msg {
+  font-size: 11px;
+  color: var(--text-muted, #666);
+  text-align: center;
+  padding: 4px 0;
+  font-style: italic;
+}
+
+/* ── Research Sections in Chat ── */
+
 .research-section {
-  margin-bottom: 20px;
+  margin-top: 12px;
 }
 
 .research-section-title {
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-muted, #888);
-  margin: 0 0 12px 0;
+  margin: 0 0 8px 0;
 }
 
-.research-empty {
-  font-size: 13px;
-  color: var(--text-muted, #666);
-  font-style: italic;
-}
+/* ── Web Result Cards ── */
 
-/* Web Result Cards */
 .web-result-card {
-  padding: 12px;
+  padding: 10px;
   border-radius: 6px;
   cursor: pointer;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   border: 1px solid var(--border-color, #333);
 }
 
 .web-result-card:hover {
-  background: var(--hover-bg, rgba(255, 255, 255, 0.05));
+  background: rgba(255, 255, 255, 0.05);
   border-color: var(--accent-color, #3b82f6);
 }
 
@@ -1490,13 +1388,13 @@ Add to `App.css`:
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .source-type-badge {
   display: inline-block;
-  padding: 2px 6px;
-  border-radius: 4px;
+  padding: 1px 5px;
+  border-radius: 3px;
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
@@ -1513,40 +1411,56 @@ Add to `App.css`:
 }
 
 .web-result-title {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 
 .web-result-snippet {
   font-size: 12px;
   color: var(--text-secondary, #aaa);
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-/* Gem Suggestion Cards */
+/* ── Gem Suggestion Cards ── */
+
 .research-gem-card {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  margin-bottom: 8px;
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color, #333);
 }
 
-.research-gem-card .gem-card {
+.research-gem-card .gem-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex: 1;
+  min-width: 0;
+}
+
+.research-gem-card .gem-title {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .research-add-gem {
   flex-shrink: 0;
-  padding: 6px 12px;
+  padding: 4px 10px;
   border-radius: 4px;
   border: 1px solid var(--accent-color, #3b82f6);
   background: transparent;
   color: var(--accent-color, #3b82f6);
-  font-size: 12px;
+  font-size: 11px;
   cursor: pointer;
 }
 
@@ -1559,46 +1473,6 @@ Add to `App.css`:
   color: var(--text-muted, #666);
   cursor: default;
 }
-
-/* Project Summary Panel */
-.project-summary-panel {
-  padding: 16px;
-  margin-bottom: 16px;
-  border: 1px solid var(--border-color, #333);
-  border-radius: 6px;
-  background: var(--card-bg, rgba(255, 255, 255, 0.02));
-}
-
-.summary-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.summary-header h4 {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted, #888);
-}
-
-.summary-header button {
-  background: none;
-  border: none;
-  color: var(--text-muted, #666);
-  cursor: pointer;
-  font-size: 12px;
-}
-
-.summary-content {
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--text-secondary, #ccc);
-  white-space: pre-wrap;
-}
 ```
 
 ---
@@ -1607,20 +1481,21 @@ Add to `App.css`:
 
 | Scenario | Behavior |
 |----------|----------|
-| No Tavily API key | `web_provider` is `None`. `CompositeSearchProvider` returns empty for `web_search`. Gem suggestions still work. |
+| No Tavily API key | `web_provider` is `None`. `run_research` returns empty `web_results`. Gem suggestions still work. |
 | Tavily API rate limited | Individual topic search returns error, logged, skipped. Remaining topics continue. |
-| Tavily API key invalid | HTTP 401 from Tavily. Logged as error. `web_results` empty in response. |
-| LLM returns non-JSON | `serde_json::from_str` fails. Command returns error. Frontend shows error message. |
+| LLM returns non-JSON topics | `serde_json::from_str` fails. `suggest_topics` returns error. Chat shows error message. |
 | LLM returns markdown-wrapped JSON | Code fence stripping handles `` ```json [...] ``` `` wrapping. |
-| LLM unavailable (IntelProvider not ready) | `chat()` returns error. Command returns error. Frontend shows error message. |
+| LLM unavailable | `chat()` returns error. Frontend shows error in chat bubble. |
 | No gems in library | `search_provider.search()` returns empty. `suggested_gems` empty. Web results still show. |
 | Project has no description or objective | Context is just the title. LLM generates topics from title alone. |
-| Duplicate URLs across topics | `dedup_by` on sorted URLs removes duplicates before returning. |
-| App started without Tavily key, key added later | Requires restart. `CompositeSearchProvider` is built at startup. Hot-reload is out of scope. |
-| Summarize with 0 gems | Returns a friendly message suggesting the user add gems first. |
-| Chat session with 0 gems | Context will be project metadata only. LLM can still answer questions about the project goal. |
-| Multiple concurrent chats on different projects | `Chatbot` manages multiple sessions via `HashMap<session_id, ChatSession>`. Each `ProjectChatSource` is independent. |
-| Chat session after gems added/removed | `get_context()` is called fresh on every message. New gems appear, removed gems disappear. |
+| Duplicate URLs across topics | `dedup_by` on sorted URLs removes duplicates. |
+| Summarize with 0 gems | Returns friendly message: "This project has no gems yet." |
+| User adds custom topic | Added to local `topics` state. Included in next `run_research` call. |
+| User removes all topics then clicks search | "Search" button disabled when 0 topics selected. |
+| Gem already in project | "Add" button should check existing project gems. Future enhancement. |
+| App restart clears research chat | Chat is ephemeral (v1). Research can be re-run anytime. |
+| Multiple projects open | Each `ProjectResearchChat` instance has its own state. Switching projects remounts. |
+| Switch project while research loading | `useEffect` cleanup cancels stale requests via `cancelled` flag. |
 
 ---
 
@@ -1628,63 +1503,49 @@ Add to `App.css`:
 
 ### Unit Tests
 
-**`tavily_provider.rs` tests**:
-- `classify_source_type`: youtube.com -> Video, arxiv.org -> Paper, medium.com -> Article, random.com -> Other
-- `extract_domain`: strips protocol, www prefix, path
-- `supports_web_search`: returns true
-- `check_availability`: returns true when key non-empty, false when empty
+**`project_agent.rs` tests:**
+- `suggest_topics()` returns 3-5 strings for valid project
+- `suggest_topics()` handles markdown-wrapped JSON
+- `run_research()` returns web + gem results for given topics
+- `run_research()` with empty topics returns empty results
+- `run_research()` handles web search failure gracefully (skips, continues)
+- `run_research()` deduplicates URLs across topics
+- `summarize()` returns summary for project with gems
+- `summarize()` returns friendly message for project with 0 gems
+- `start_chat()` + `send_chat_message()` + `end_chat()` lifecycle
 
-**`composite_provider.rs` tests**:
-- `search` delegates to gem_provider
-- `web_search` delegates to web_provider when present
-- `web_search` returns empty when web_provider is None
-- `supports_web_search` returns false when web_provider is None
-- `index_gem`, `remove_gem`, `reindex_all` delegate to gem_provider
-
-**`project_chat.rs` tests**:
+**`project_chat.rs` tests:**
 - `label()` returns "Project: {title}"
 - `needs_preparation()` returns false
 - `get_context()` assembles project metadata + gem content
 
-**`project_agent.rs` tests**:
-- `research()` returns combined web + gem results
-- `research()` handles missing web provider gracefully
-- `summarize()` returns summary string
-- `summarize()` handles empty project (0 gems)
-- `start_chat()` + `send_chat_message()` + `end_chat()` lifecycle
-
-### Integration Tests
-
-- Create project -> run research -> verify both `web_results` and `suggested_gems` are populated
-- Run research without Tavily key -> verify `web_results` empty, `suggested_gems` still work
-- Add gems to project -> run summarize -> verify summary references the gems
-- Start project chat -> send message -> verify response references project content
-- Verify `search_gems` command still works identically through `CompositeSearchProvider`
-- Verify `rebuild_search_index` still works through `CompositeSearchProvider`
-
 ### Manual Testing Checklist
 
-- [ ] Create project with title only -> research panel auto-shows with spinner
-- [ ] Verify LLM generates reasonable topics for the project title
-- [ ] Verify web results show with source type badges (Paper, Article, Video)
-- [ ] Click web result -> opens in system browser
-- [ ] Verify gem suggestions appear with "Add" buttons
-- [ ] Click "Add" on a gem -> button changes to "Added", gem appears in project
-- [ ] Click "Research" button on existing project -> research panel shows
-- [ ] Click "Summarize" button on project with gems -> summary panel appears
-- [ ] Click "Summarize" on empty project -> shows "no gems yet" message
-- [ ] Remove Tavily API key from settings -> restart -> web section shows "Web search not configured"
-- [ ] Existing gem search (GemsPanel search bar) still works unchanged
+- [ ] Open project → RightPanel shows research chat with loading spinner
+- [ ] Topics appear as numbered chips with remove buttons
+- [ ] Remove a topic → chip disappears, system message shown
+- [ ] Type custom topic → added to topic list
+- [ ] Click "Search (N topics)" → loading state → web cards + gem cards appear in chat
+- [ ] Click web result card → opens URL in system browser
+- [ ] Click "Add" on gem card → button changes to "Added", gem appears in project
+- [ ] Type "summarize" → summary appears as chat message
+- [ ] Select a gem in project → "Detail" tab appears alongside "Research" tab
+- [ ] Switch between Research and Detail tabs → state preserved
+- [ ] Remove Tavily API key → restart → web section empty, gems still work
+- [ ] Switch to different project → research chat resets with new topics
+- [ ] Existing gem search in GemsPanel still works unchanged
 
 ---
 
 ## Summary
 
-This design adds a **Project Research Agent** as a persistent, reusable agent that manages research (web search + gem suggestions), summarization, and chat for any project. Key architecture:
+The Research Agent becomes a **conversational collaborator** in the RightPanel. The two-phase research flow (suggest topics → user curates → execute search) gives users control while keeping the interaction natural. The existing Chatbot engine and ProjectChatSource provide chat infrastructure, while `ProjectResearchChat` on the frontend handles rich message rendering (topic chips, web cards, gem cards).
 
-- **Search layer**: `SearchResultProvider` extended with `web_search`/`supports_web_search` default methods. `TavilyProvider` for web search, `CompositeSearchProvider` wrapping gem + web providers behind the existing `Arc<dyn SearchResultProvider>`.
-- **Agent layer**: `ProjectResearchAgent` holds all providers + a `Chatbot` instance. Exposes `research()`, `summarize()`, and chat lifecycle methods. Registered as `Arc<TokioMutex<ProjectResearchAgent>>` in Tauri state.
-- **Chat layer**: `ProjectChatSource` implements `Chatable` (assembles project gem content as context). `Chatbot` handles sessions, history, and LLM prompting unchanged.
-- **Command layer**: Six thin Tauri commands delegating to the agent: `get_project_research`, `get_project_summary`, `start_project_chat`, `send_project_chat_message`, `get_project_chat_history`, `end_project_chat`.
+Key changes from the original one-shot design:
+1. **`research()` split into `suggest_topics()` + `run_research(topics)`** — user controls what gets searched
+2. **Chat-first UI** — research lives in RightPanel as a conversation, not a standalone panel
+3. **Rich messages** — web results and gem suggestions render as interactive cards within chat bubbles
+4. **RightPanel integration** — "Research" tab for projects (default), "Detail" tab when gem selected
+5. **Frontend intent detection (v1)** — keywords like "search", "summarize" trigger actions; everything else adds topics
 
-No new traits for search. No new dependencies. No new settings infrastructure. All existing commands work unchanged through the `CompositeSearchProvider`. The agent is independent of project creation — it can be invoked on any project at any time.
+All search infrastructure (Phases 1-2) remains unchanged. Backend changes are minimal (one method becomes two). The heaviest work is the frontend `ProjectResearchChat` component and RightPanel wiring.

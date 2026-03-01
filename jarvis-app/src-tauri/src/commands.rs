@@ -460,6 +460,15 @@ pub async fn delete_gem(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn update_gem_title(
+    id: String,
+    title: String,
+    gem_store: State<'_, Arc<dyn GemStore>>,
+) -> Result<(), String> {
+    gem_store.update_title(&id, &title).await
+}
+
 /// Get a gem by ID
 ///
 /// This command retrieves a gem from the store by its unique identifier.
@@ -4307,7 +4316,7 @@ pub async fn dismiss_copilot_question(
 #[tauri::command]
 pub async fn chat_with_recording(
     recording_filename: String,
-    intel_queue: State<'_, IntelQueue>,
+    intel_queue: State<'_, Arc<IntelQueue>>,
     app_handle: AppHandle,
 ) -> Result<serde_json::Value, String> {
     let source = RecordingChatSource::new(app_handle.clone(), recording_filename.clone())?;
@@ -4376,7 +4385,7 @@ pub async fn chat_send_message(
     session_id: String,
     recording_filename: String,
     message: String,
-    intel_queue: State<'_, IntelQueue>,
+    intel_queue: State<'_, Arc<IntelQueue>>,
     app_handle: AppHandle,
 ) -> Result<String, String> {
     // Recreate RecordingChatSource (stateless, cheap to construct)
@@ -4387,7 +4396,7 @@ pub async fn chat_send_message(
     let mut chatbot = chatbot_state.lock().await;
 
     // Send message
-    chatbot.send_message(&session_id, &message, &source, &intel_queue).await
+    chatbot.send_message(&session_id, &message, &source, &*intel_queue).await
 }
 
 /// Get the message history for a chat session

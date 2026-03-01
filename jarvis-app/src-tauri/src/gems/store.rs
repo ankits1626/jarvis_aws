@@ -115,4 +115,7 @@ pub trait GemStore: Send + Sync {
     /// * `Ok(None)` - If no gem with matching recording_filename exists
     /// * `Err(String)` - If the query fails
     async fn find_by_recording_filename(&self, filename: &str) -> Result<Option<GemPreview>, String>;
+
+    /// Update a gem's title
+    async fn update_title(&self, id: &str, title: &str) -> Result<(), String>;
 }

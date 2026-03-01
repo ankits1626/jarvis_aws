@@ -485,6 +485,22 @@ impl GemStore for SqliteGemStore {
         
         Ok(result.map(|gem| Self::gem_to_preview(&gem)))
     }
+
+    async fn update_title(&self, id: &str, title: &str) -> Result<(), String> {
+        let conn = self.conn.lock()
+            .map_err(|e| format!("Failed to acquire lock: {}", e))?;
+
+        let rows_affected = conn.execute(
+            "UPDATE gems SET title = ?1 WHERE id = ?2",
+            params![title, id],
+        ).map_err(|e| format!("Failed to update gem title: {}", e))?;
+
+        if rows_affected == 0 {
+            return Err(format!("Gem with id '{}' not found", id));
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

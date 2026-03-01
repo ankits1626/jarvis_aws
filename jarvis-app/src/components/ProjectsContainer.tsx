@@ -1,16 +1,18 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { ProjectPreview, Project, ProjectDetail, GemPreview, GemSearchResult } from '../state/types';
+import type { ProjectPreview, Project, ProjectDetail, GemPreview, GemSearchResult, Gem } from '../state/types';
 
 interface ProjectsContainerProps {
   onGemSelect?: (gemId: string | null) => void;
+  onProjectSelect?: (id: string | null, title: string | null) => void;
+  refreshTrigger?: number;
 }
 
 function CreateProjectForm({
   onCreated,
   onCancel,
 }: {
-  onCreated: (id: string) => void;
+  onCreated: (id: string, title: string) => void;
   onCancel: () => void;
 }) {
   const [title, setTitle] = useState('');
@@ -32,7 +34,7 @@ function CreateProjectForm({
         description: description.trim() || null,
         objective: objective.trim() || null,
       });
-      onCreated(project.id);
+      onCreated(project.id, project.title);
     } catch (err) {
       setError(String(err));
       setCreating(false);
@@ -258,7 +260,7 @@ function ProjectList({
   projects: ProjectPreview[];
   selectedProjectId: string | null;
   onSelectProject: (id: string) => void;
-  onProjectCreated: (id: string) => void;
+  onProjectCreated: (id: string, title: string) => void;
   loading: boolean;
 }) {
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -277,7 +279,7 @@ function ProjectList({
 
       {showCreateForm && (
         <CreateProjectForm
-          onCreated={(id) => { setShowCreateForm(false); onProjectCreated(id); }}
+          onCreated={(id, title) => { setShowCreateForm(false); onProjectCreated(id, title); }}
           onCancel={() => setShowCreateForm(false)}
         />
       )}
@@ -316,16 +318,124 @@ function ProjectList({
   );
 }
 
+function ProjectGemCard({
+  gem,
+  onGemSelect,
+  onRemove,
+}: {
+  gem: GemPreview;
+  onGemSelect?: (gemId: string | null) => void;
+  onRemove: (gemId: string) => void;
+}) {
+  const isAudioTranscript = gem.domain === 'jarvis-app';
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [audioLoading, setAudioLoading] = useState(false);
+
+  const handlePlayToggle = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+      setAudioUrl(null);
+    } else {
+      setAudioLoading(true);
+      try {
+        const fullGem = await invoke<Gem>('get_gem', { id: gem.id });
+        const recordingFilename = fullGem.source_meta?.recording_filename as string | undefined;
+        if (!recordingFilename) return;
+        const wavBytes = await invoke<number[]>('convert_to_wav', { filename: recordingFilename });
+        const blob = new Blob([new Uint8Array(wavBytes)], { type: 'audio/wav' });
+        setAudioUrl(URL.createObjectURL(blob));
+      } catch (err) {
+        console.error('Failed to load audio:', err);
+      } finally {
+        setAudioLoading(false);
+      }
+    }
+  };
+
+  return (
+    <div className="project-gem-card">
+      <div
+        className="gem-card"
+        onClick={() => onGemSelect?.(gem.id)}
+      >
+        <div className="gem-card-header">
+          <span className={`source-badge ${gem.source_type.toLowerCase()}`}>
+            {gem.source_type}
+          </span>
+          {isAudioTranscript && gem.transcript_language && (
+            <span className="gem-lang-badge" title="Transcript available">
+              {gem.transcript_language}
+            </span>
+          )}
+          <span className="gem-date">
+            {new Date(gem.captured_at).toLocaleDateString()}
+          </span>
+        </div>
+        <div className="gem-title">{gem.title}</div>
+        {gem.author && (
+          <div className="gem-meta">
+            <span className="gem-author">by {gem.author}</span>
+          </div>
+        )}
+        {gem.description && (
+          <div className="gem-description">{gem.description}</div>
+        )}
+        {gem.tags && gem.tags.length > 0 && (
+          <div className="gem-tags">
+            {gem.tags.map((tag, idx) => (
+              <span key={idx} className="gem-tag">{tag}</span>
+            ))}
+          </div>
+        )}
+        {isAudioTranscript && (
+          <div className="gem-card-audio-controls">
+            <button
+              className="gem-play-button"
+              onClick={handlePlayToggle}
+              disabled={audioLoading}
+            >
+              {audioLoading ? '...' : audioUrl ? 'Stop' : 'Play'}
+            </button>
+          </div>
+        )}
+        {audioUrl && (
+          <div className="gem-audio-player" onClick={(e) => e.stopPropagation()}>
+            <audio
+              controls
+              src={audioUrl}
+              autoPlay
+              onEnded={() => {
+                URL.revokeObjectURL(audioUrl);
+                setAudioUrl(null);
+              }}
+            />
+          </div>
+        )}
+      </div>
+      <button
+        className="remove-from-project"
+        onClick={(e) => { e.stopPropagation(); onRemove(gem.id); }}
+        title="Remove from project"
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
 function ProjectGemList({
   projectId,
   onGemSelect,
   onProjectsChanged,
   onProjectDeleted,
+  refreshTrigger,
 }: {
   projectId: string | null;
   onGemSelect?: (gemId: string | null) => void;
   onProjectsChanged: () => void;
   onProjectDeleted: () => void;
+  refreshTrigger?: number;
 }) {
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [loading, setLoading] = useState(false);
@@ -349,7 +459,7 @@ function ProjectGemList({
       return;
     }
     loadProject(projectId);
-  }, [projectId]);
+  }, [projectId, refreshTrigger]);
 
   // Search with 300ms debounce
   useEffect(() => {
@@ -595,44 +705,12 @@ function ProjectGemList({
           </div>
         )}
         {displayGems.map(gem => (
-          <div key={gem.id} className="project-gem-card">
-            <div
-              className="gem-card"
-              onClick={() => onGemSelect?.(gem.id)}
-            >
-              <div className="gem-card-header">
-                <span className={`source-badge ${gem.source_type.toLowerCase()}`}>
-                  {gem.source_type}
-                </span>
-                <span className="gem-date">
-                  {new Date(gem.captured_at).toLocaleDateString()}
-                </span>
-              </div>
-              <div className="gem-title">{gem.title}</div>
-              {gem.author && (
-                <div className="gem-meta">
-                  <span className="gem-author">by {gem.author}</span>
-                </div>
-              )}
-              {gem.description && (
-                <div className="gem-description">{gem.description}</div>
-              )}
-              {gem.tags && gem.tags.length > 0 && (
-                <div className="gem-tags">
-                  {gem.tags.map((tag, idx) => (
-                    <span key={idx} className="gem-tag">{tag}</span>
-                  ))}
-                </div>
-              )}
-            </div>
-            <button
-              className="remove-from-project"
-              onClick={(e) => { e.stopPropagation(); handleRemoveGem(gem.id); }}
-              title="Remove from project"
-            >
-              ×
-            </button>
-          </div>
+          <ProjectGemCard
+            key={gem.id}
+            gem={gem}
+            onGemSelect={onGemSelect}
+            onRemove={handleRemoveGem}
+          />
         ))}
       </div>
 
@@ -654,7 +732,7 @@ function ProjectGemList({
   );
 }
 
-export function ProjectsContainer({ onGemSelect }: ProjectsContainerProps) {
+export function ProjectsContainer({ onGemSelect, onProjectSelect, refreshTrigger }: ProjectsContainerProps) {
   const [projects, setProjects] = useState<ProjectPreview[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -672,9 +750,10 @@ export function ProjectsContainer({ onGemSelect }: ProjectsContainerProps) {
 
   useEffect(() => { fetchProjects(); }, [fetchProjects]);
 
-  const handleProjectCreated = (projectId: string) => {
+  const handleProjectCreated = (projectId: string, projectTitle: string) => {
     fetchProjects();
     setSelectedProjectId(projectId);
+    onProjectSelect?.(projectId, projectTitle);
   };
 
   return (
@@ -682,7 +761,11 @@ export function ProjectsContainer({ onGemSelect }: ProjectsContainerProps) {
       <ProjectList
         projects={projects}
         selectedProjectId={selectedProjectId}
-        onSelectProject={setSelectedProjectId}
+        onSelectProject={(id) => {
+          setSelectedProjectId(id);
+          const project = projects.find(p => p.id === id);
+          onProjectSelect?.(id, project?.title || null);
+        }}
         onProjectCreated={handleProjectCreated}
         loading={loading}
       />
@@ -692,8 +775,10 @@ export function ProjectsContainer({ onGemSelect }: ProjectsContainerProps) {
         onProjectsChanged={fetchProjects}
         onProjectDeleted={() => {
           setSelectedProjectId(null);
+          onProjectSelect?.(null, null);
           fetchProjects();
         }}
+        refreshTrigger={refreshTrigger}
       />
     </div>
   );

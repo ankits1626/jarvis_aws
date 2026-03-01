@@ -55,6 +55,32 @@ pub struct GemSearchResult {
     pub summary: Option<String>,
 }
 
+/// Classification of a web search result by content type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WebSourceType {
+    /// Academic papers (arxiv, scholar, semantic scholar)
+    Paper,
+    /// Blog posts and articles (medium, dev.to, substack)
+    Article,
+    /// Video content (youtube, vimeo)
+    Video,
+    /// Everything else
+    Other,
+}
+
+/// A search result from the web (not a gem).
+///
+/// Returned by SearchResultProvider::web_search for providers that support it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSearchResult {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+    pub source_type: WebSourceType,
+    pub domain: String,
+    pub published_date: Option<String>,
+}
+
 /// Result of the semantic search setup flow
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QmdSetupResult {
@@ -115,4 +141,23 @@ pub trait SearchResultProvider: Send + Sync {
     /// Unlike index_gem/remove_gem, this SHOULD await completion.
     /// Returns the number of documents indexed.
     async fn reindex_all(&self) -> Result<usize, String>;
+
+    /// Search the web for external resources (papers, articles, videos).
+    ///
+    /// Default: returns empty vec (provider does not support web search).
+    /// Override in providers that have web search capability (e.g., Tavily).
+    async fn web_search(
+        &self,
+        _query: &str,
+        _limit: usize,
+    ) -> Result<Vec<WebSearchResult>, String> {
+        Ok(Vec::new())
+    }
+
+    /// Check if this provider supports web search.
+    ///
+    /// Default: false. Override in web-capable providers.
+    fn supports_web_search(&self) -> bool {
+        false
+    }
 }

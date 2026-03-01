@@ -718,7 +718,10 @@ export interface RecordingTranscriptionState {
   
   /** Whether gem was successfully saved (for success indicator) */
   gemSaved: boolean;
-  
+
+  /** ID of the saved gem (for adding to projects) */
+  gemId?: string;
+
   /** Error message if gem save failed */
   gemError?: string;
 }
@@ -976,4 +979,43 @@ export interface KnowledgeEntry {
   
   /** ISO 8601 timestamp when knowledge was last assembled */
   last_assembled: string;
+}
+
+/**
+ * Project Research Assistant types
+ * 
+ * These types define the structure for project research functionality
+ */
+
+/** Web search result matching Rust WebSearchResult struct */
+export interface WebSearchResult {
+  /** Page title */
+  title: string;
+  
+  /** Full URL */
+  url: string;
+  
+  /** Content snippet/excerpt */
+  snippet: string;
+  
+  /** Source type classification (matches Rust WebSourceType enum) */
+  source_type: 'Paper' | 'Article' | 'Video' | 'Other';
+  
+  /** Domain extracted from URL */
+  domain: string;
+  
+  /** Published date (ISO 8601, optional) */
+  published_date: string | null;
+}
+
+/** Project research results matching Rust ProjectResearchResults struct */
+export interface ProjectResearchResults {
+  /** Web search results from Tavily */
+  web_results: WebSearchResult[];
+  
+  /** Suggested gems from local knowledge base */
+  suggested_gems: GemSearchResult[];
+  
+  /** Topics that were searched */
+  topics_searched: string[];
 }

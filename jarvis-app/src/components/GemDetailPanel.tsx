@@ -35,11 +35,41 @@ export default function GemDetailPanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [knowledgeEntry, setKnowledgeEntry] = useState<KnowledgeEntry | null>(null);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [audioLoading, setAudioLoading] = useState(false);
 
   useEffect(() => {
+    // Clean up audio when switching gems
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+      setAudioUrl(null);
+    }
     loadGem();
     loadKnowledge();
   }, [gemId]);
+
+  const handlePlayAudio = async () => {
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+      setAudioUrl(null);
+      return;
+    }
+    if (!gem) return;
+    const recordingFilename = gem.source_meta?.recording_filename as string | undefined;
+    if (!recordingFilename) return;
+    setAudioLoading(true);
+    try {
+      const wavBytes = await invoke<number[]>('convert_to_wav', { filename: recordingFilename });
+      const blob = new Blob([new Uint8Array(wavBytes)], { type: 'audio/wav' });
+      setAudioUrl(URL.createObjectURL(blob));
+    } catch (err) {
+      console.error('Failed to load audio:', err);
+    } finally {
+      setAudioLoading(false);
+    }
+  };
 
   const loadGem = async () => {
     try {
@@ -70,6 +100,37 @@ export default function GemDetailPanel({
       await loadKnowledge();
     } catch (err) {
       console.error('Failed to regenerate knowledge:', err);
+    }
+  };
+
+  const handleStartEditTitle = () => {
+    if (gem) {
+      setEditTitle(gem.title);
+      setEditingTitle(true);
+    }
+  };
+
+  const handleSaveTitle = async () => {
+    if (!gem || !editTitle.trim()) return;
+    try {
+      await invoke('update_gem_title', { id: gem.id, title: editTitle.trim() });
+      setGem({ ...gem, title: editTitle.trim() });
+      setEditingTitle(false);
+    } catch (err) {
+      console.error('Failed to update title:', err);
+    }
+  };
+
+  const handleCancelEditTitle = () => {
+    setEditingTitle(false);
+  };
+
+  const handleTitleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleSaveTitle();
+    } else if (e.key === 'Escape') {
+      handleCancelEditTitle();
     }
   };
 
@@ -119,7 +180,22 @@ export default function GemDetailPanel({
     <div className="gem-detail-panel">
       <div className="gem-detail-header">
         <div className="gem-title-section">
-          <h3>{gem.title}</h3>
+          {editingTitle ? (
+            <div className="gem-title-edit">
+              <input
+                type="text"
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                onKeyDown={handleTitleKeyDown}
+                autoFocus
+                className="gem-title-input"
+              />
+              <button onClick={handleSaveTitle} disabled={!editTitle.trim()} className="action-button small">Save</button>
+              <button onClick={handleCancelEditTitle} className="action-button small secondary">Cancel</button>
+            </div>
+          ) : (
+            <h3 className="gem-title-editable" onClick={handleStartEditTitle} title="Click to edit title">{gem.title}</h3>
+          )}
           <span className="source-badge">{gem.source_type}</span>
         </div>
       </div>
@@ -140,6 +216,32 @@ export default function GemDetailPanel({
           <span className="metadata-value">{formatDate(gem.captured_at)}</span>
         </div>
       </div>
+
+      {/* Audio player for recording gems */}
+      {isAudioGem && (
+        <div className="gem-detail-audio">
+          <button
+            className="gem-play-button"
+            onClick={handlePlayAudio}
+            disabled={audioLoading}
+          >
+            {audioLoading ? 'Loading...' : audioUrl ? 'Stop' : 'Play Recording'}
+          </button>
+          {audioUrl && (
+            <div className="gem-audio-player">
+              <audio
+                controls
+                src={audioUrl}
+                autoPlay
+                onEnded={() => {
+                  URL.revokeObjectURL(audioUrl);
+                  setAudioUrl(null);
+                }}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Co-Pilot Data (Requirement 10.3, 10.4, 10.5, 10.6) */}
       {copilot && (

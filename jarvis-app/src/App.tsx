@@ -56,6 +56,11 @@ function App() {
   const [selectedGemId, setSelectedGemId] = useState<string | null>(null);
   const [gemsPanelRefreshKey, setGemsPanelRefreshKey] = useState(0);
   
+  // Project selection state (lifted from ProjectsContainer for RightPanel access)
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [selectedProjectTitle, setSelectedProjectTitle] = useState<string | null>(null);
+  const [projectGemsRefreshKey, setProjectGemsRefreshKey] = useState(0);
+  
   // Resizable right panel
   const { width: rightPanelWidth, handleMouseDown: handleResizeMouseDown, isResizing } = useResizable();
   const showRightPanel = activeNav === 'record' || activeNav === 'recordings' || activeNav === 'gems' || activeNav === 'projects';
@@ -436,7 +441,7 @@ function App() {
       }
       
       console.log('[SaveGem] invoking save_recording_gem:', { filename, transcriptLen: recordingState.transcript.transcript.length, language: recordingState.transcript.language, createdAt: recording.created_at, hasCopilotData: !!copilotData });
-      await invoke<Gem>('save_recording_gem', {
+      const savedGem = await invoke<Gem>('save_recording_gem', {
         filename,
         transcript: recordingState.transcript.transcript,
         language: recordingState.transcript.language,
@@ -444,7 +449,7 @@ function App() {
         copilotData,
       });
       console.log('[SaveGem] SUCCESS for', filename);
-      
+
       setRecordingStates(prev => ({
         ...prev,
         [filename]: {
@@ -452,6 +457,7 @@ function App() {
           savingGem: false,
           hasGem: true,
           gemSaved: true,
+          gemId: savedGem.id,
         }
       }));
       
@@ -535,6 +541,21 @@ function App() {
   };
   
   /**
+   * Handle project selection from ProjectsContainer
+   */
+  const handleProjectSelect = useCallback((id: string | null, title: string | null) => {
+    setSelectedProjectId(id);
+    setSelectedProjectTitle(title);
+  }, []);
+  
+  /**
+   * Handle gem list refresh after research agent adds a gem
+   */
+  const handleProjectGemsChanged = useCallback(() => {
+    setProjectGemsRefreshKey(prev => prev + 1);
+  }, []);
+  
+  /**
    * Handle start chat with recording
    */
   const handleStartChat = async (filename: string) => {
@@ -581,6 +602,8 @@ function App() {
 
     // Reset right panel state when switching nav
     setSelectedGemId(null);
+    setSelectedProjectId(null);
+    setSelectedProjectTitle(null);
     deselectRecording();
 
     // Clear YouTube notification when navigating to YouTube
@@ -831,7 +854,11 @@ function App() {
         )}
         
         {activeNav === 'projects' && (
-          <ProjectsContainer onGemSelect={handleGemSelect} />
+          <ProjectsContainer
+            onGemSelect={handleGemSelect}
+            onProjectSelect={handleProjectSelect}
+            refreshTrigger={projectGemsRefreshKey}
+          />
         )}
         
         {activeNav === 'youtube' && (
@@ -880,6 +907,9 @@ function App() {
         onStartChat={handleStartChat}
         chatSessionId={chatSessionId}
         chatStatus={chatStatus}
+        selectedProjectId={selectedProjectId}
+        selectedProjectTitle={selectedProjectTitle}
+        onProjectGemsChanged={handleProjectGemsChanged}
         style={{ width: rightPanelWidth }}
       />
 

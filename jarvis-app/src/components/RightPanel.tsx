@@ -6,6 +6,7 @@ import { CoPilotCardStack } from './CoPilotCardStack';
 import RecordingDetailPanel from './RecordingDetailPanel';
 import GemDetailPanel from './GemDetailPanel';
 import ChatPanel from './ChatPanel';
+import ProjectResearchChat from './ProjectResearchChat';
 import { RecordingMetadata, TranscriptionSegment, RecordingTranscriptionState, CoPilotState, CoPilotStatus } from '../state/types';
 
 type ActiveNav = 'record' | 'recordings' | 'gems' | 'projects' | 'youtube' | 'browser' | 'settings';
@@ -37,6 +38,9 @@ interface RightPanelProps {
   onStartChat?: (filename: string) => void;
   chatSessionId?: string | null;
   chatStatus?: 'preparing' | 'ready' | 'error';
+  selectedProjectId?: string | null;
+  selectedProjectTitle?: string | null;
+  onProjectGemsChanged?: () => void;
   style?: React.CSSProperties;
 }
 
@@ -67,6 +71,9 @@ export default function RightPanel({
   onStartChat,
   chatSessionId,
   chatStatus = 'ready',
+  selectedProjectId,
+  selectedProjectTitle,
+  onProjectGemsChanged,
   style
 }: RightPanelProps) {
   const [activeTab, setActiveTab] = useState<'transcript' | 'copilot' | 'chat'>('transcript');
@@ -113,6 +120,21 @@ export default function RightPanel({
     }
   }
 
+  // Default to Research tab when entering projects view
+  useEffect(() => {
+    if (activeNav === 'projects' && selectedProjectId) {
+      setActiveTab('chat'); // 'chat' = Research tab in projects context
+    }
+  }, [activeNav, selectedProjectId]);
+
+  // Switch to Detail tab when a gem is selected in projects view
+  useEffect(() => {
+    if (activeNav === 'projects' && selectedGemId) {
+      setActiveTab('transcript'); // 'transcript' = Detail tab in projects context
+      setActiveGemTab('detail');
+    }
+  }, [activeNav, selectedGemId]);
+
   // Knowledge file handlers for gems
   const handleOpenKnowledgeFile = async (filename: string) => {
     // Add tab if not already open
@@ -120,6 +142,7 @@ export default function RightPanel({
       setOpenKnowledgeFiles(prev => [...prev, filename]);
     }
     setActiveGemTab(filename);
+    setActiveTab('transcript'); // Ensure we're on the gem side (for projects view)
 
     // Fetch content if not cached
     if (!knowledgeFileContents[filename] && selectedGemId) {
@@ -398,82 +421,94 @@ export default function RightPanel({
     );
   }
 
-  // Projects nav: show gem detail panel when a gem is selected from a project
+  // Projects nav: show research chat when a project is selected
   if (activeNav === 'projects') {
-    if (selectedGemId) {
-      // Tabbed mode: when knowledge files are open
-      if (openKnowledgeFiles.length > 0) {
-        return (
-          <div className="right-panel" style={style}>
-            <div className="record-tabs-view">
-              <div className="tab-buttons">
-                <button
-                  className={`tab-button ${activeGemTab === 'detail' ? 'active' : ''}`}
-                  onClick={() => setActiveGemTab('detail')}
-                >
-                  Detail
-                </button>
-                {openKnowledgeFiles.map(filename => (
-                  <button
-                    key={filename}
-                    className={`tab-button ${activeGemTab === filename ? 'active' : ''}`}
-                    onClick={() => setActiveGemTab(filename)}
-                  >
-                    {filename}
-                    <span
-                      className="tab-close"
-                      onClick={(e) => { e.stopPropagation(); handleCloseKnowledgeTab(filename); }}
-                    >
-                      ×
-                    </span>
-                  </button>
-                ))}
-              </div>
-              <div className="tab-content">
-                {activeGemTab === 'detail' ? (
-                  <GemDetailPanel
-                    gemId={selectedGemId}
-                    onDelete={onDeleteGem}
-                    onTranscribe={onTranscribeGem}
-                    onEnrich={onEnrichGem}
-                    aiAvailable={aiAvailable}
-                    onOpenKnowledgeFile={handleOpenKnowledgeFile}
-                  />
-                ) : (
-                  <div className="knowledge-file-viewer">
-                    {knowledgeFileContents[activeGemTab] ? (
-                      <pre className="knowledge-file-content">{knowledgeFileContents[activeGemTab]}</pre>
-                    ) : (
-                      <div className="loading">Loading {activeGemTab}...</div>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        );
-      }
-
-      // Single-panel mode: no knowledge files open
+    // No project selected
+    if (!selectedProjectId) {
       return (
         <div className="right-panel" style={style}>
-          <GemDetailPanel
-            gemId={selectedGemId}
-            onDelete={onDeleteGem}
-            onTranscribe={onTranscribeGem}
-            onEnrich={onEnrichGem}
-            aiAvailable={aiAvailable}
-            onOpenKnowledgeFile={handleOpenKnowledgeFile}
-          />
+          <div className="right-panel-placeholder">
+            Select a project to start researching
+          </div>
         </div>
       );
     }
 
+    // Project selected + gem selected → tabs: Research | Detail | [knowledge files]
+    if (selectedGemId) {
+      return (
+        <div className="right-panel" style={style}>
+          <div className="record-tabs-view">
+            <div className="tab-buttons">
+              <button
+                className={`tab-button ${activeTab === 'chat' ? 'active' : ''}`}
+                onClick={() => handleTabChange('chat')}
+              >
+                Research
+              </button>
+              <button
+                className={`tab-button ${activeTab === 'transcript' && activeGemTab === 'detail' ? 'active' : ''}`}
+                onClick={() => { handleTabChange('transcript'); setActiveGemTab('detail'); }}
+              >
+                Detail
+              </button>
+              {openKnowledgeFiles.map(filename => (
+                <button
+                  key={filename}
+                  className={`tab-button ${activeTab === 'transcript' && activeGemTab === filename ? 'active' : ''}`}
+                  onClick={() => { handleTabChange('transcript'); setActiveGemTab(filename); }}
+                >
+                  {filename}
+                  <span
+                    className="tab-close"
+                    onClick={(e) => { e.stopPropagation(); handleCloseKnowledgeTab(filename); }}
+                  >
+                    ×
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div className="tab-content">
+              {activeTab === 'chat' ? (
+                <ProjectResearchChat
+                  key={selectedProjectId}
+                  projectId={selectedProjectId}
+                  projectTitle={selectedProjectTitle || ''}
+                  onGemsAdded={onProjectGemsChanged}
+                />
+              ) : activeGemTab !== 'detail' && openKnowledgeFiles.includes(activeGemTab) ? (
+                <div className="knowledge-file-viewer">
+                  {knowledgeFileContents[activeGemTab] ? (
+                    <pre className="knowledge-file-content">{knowledgeFileContents[activeGemTab]}</pre>
+                  ) : (
+                    <div className="loading">Loading {activeGemTab}...</div>
+                  )}
+                </div>
+              ) : (
+                <GemDetailPanel
+                  gemId={selectedGemId}
+                  onDelete={onDeleteGem}
+                  onTranscribe={onTranscribeGem}
+                  onEnrich={onEnrichGem}
+                  aiAvailable={aiAvailable}
+                  onOpenKnowledgeFile={handleOpenKnowledgeFile}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // Project selected, no gem selected → research chat full-height
     return (
       <div className="right-panel" style={style}>
-        <div className="right-panel-placeholder">
-          Select a gem to view details
-        </div>
+        <ProjectResearchChat
+          key={selectedProjectId}
+          projectId={selectedProjectId}
+          projectTitle={selectedProjectTitle || ''}
+          onGemsAdded={onProjectGemsChanged}
+        />
       </div>
     );
   }

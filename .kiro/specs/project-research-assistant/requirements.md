@@ -1,25 +1,25 @@
-# Project Research Assistant — Agent-Based Research & Summarization
+# Project Research Assistant — Conversational Research Agent
 
 ## Introduction
 
 When a user creates a project in Jarvis, they start with an empty container and must manually hunt for relevant resources. There's no help discovering external materials (papers, articles, videos) or surfacing internal gems that relate to the project's goal. As projects grow, there's also no way to get a quick summary of accumulated knowledge.
 
-This spec adds a **Project Research Agent** — a persistent, reusable agent that can be invoked on any project at any time. It supports three actions: (1) **Research** — LLM-generated search topics fed into web search + semantic gem suggestions, (2) **Summarize** — LLM-generated summary of all project gems, and (3) **Chat** — conversational Q&A over project content via the existing `Chatbot` + `Chatable` pattern.
+This spec adds a **Conversational Research Agent** — a chat-first assistant that lives in the RightPanel when viewing a project. The agent suggests research topics, the user refines them through natural dialogue, and research results flow back as rich messages in the chat. It supports three actions: (1) **Research** — two-phase flow: suggest topics → user curates → execute web search + gem suggestions, (2) **Summarize** — LLM-generated summary of all project gems, and (3) **Chat** — conversational Q&A over project content via the existing `Chatbot` + `Chatable` pattern.
 
 The agent follows the same patterns as `CoPilotAgent` (lifecycle management) and `RecordingChatSource` + `Chatbot` (chat capability). It extends the existing `SearchResultProvider` trait with a `web_search` default method and introduces a `CompositeSearchProvider` for delegation.
 
-**Reference:** Discussion doc at `discussion/29-feb-next-step/project-creation-research-assistant.md`. Depends on: [Projects spec](../projects/requirements.md) (project CRUD, `ProjectStore` trait, `ProjectDetail`), [Searchable Gems spec](../searchable-gems/requirements.md) (`SearchResultProvider` trait, FTS/QMD providers), [Intelligence spec](../intelligence-kit/requirements.md) (`IntelProvider` trait, `chat` method).
+**Reference:** Discussion doc at `discussion/29-feb-next-step/project-creation-research-assistant.md`. Change request at `change_request.md`. Depends on: [Projects spec](../projects/requirements.md) (project CRUD, `ProjectStore` trait, `ProjectDetail`), [Searchable Gems spec](../searchable-gems/requirements.md) (`SearchResultProvider` trait, FTS/QMD providers), [Intelligence spec](../intelligence-kit/requirements.md) (`IntelProvider` trait, `chat` method).
 
 ## Glossary
 
 - **WebSearchResult**: A search result from the internet — title, URL, snippet, source type (Paper/Article/Video/Other), domain, and optional publish date. Returned by `SearchResultProvider::web_search`.
 - **WebSourceType**: Classification enum for web results: `Paper` (arxiv, scholar), `Article` (medium, dev.to, blogs), `Video` (youtube, vimeo), `Other`.
-- **ProjectResearchResults**: The combined output of both research pipelines — `web_results: Vec<WebSearchResult>`, `suggested_gems: Vec<GemSearchResult>`, `topics_generated: Vec<String>`.
+- **ProjectResearchResults**: The combined output of the research pipeline — `web_results: Vec<WebSearchResult>`, `suggested_gems: Vec<GemSearchResult>`, `topics_searched: Vec<String>`.
 - **TavilyProvider**: A `SearchResultProvider` implementation that calls the Tavily API for web search. No-ops for gem-related methods (`search`, `index_gem`, `remove_gem`, `reindex_all`).
 - **CompositeSearchProvider**: A `SearchResultProvider` that wraps a gem provider (QMD or FTS) and an optional web provider (Tavily). Delegates `.search()` to the gem provider and `.web_search()` to the web provider. Registered as the single `Arc<dyn SearchResultProvider>` in Tauri state.
 - **ProjectChatSource**: Implements `Chatable` for a project — provides project gem content as context for the `Chatbot` engine. Follows the same pattern as `RecordingChatSource`.
-- **ProjectResearchAgent**: A persistent agent (like `CoPilotAgent`) that manages research, summarization, and chat for a project. Registered in Tauri state as `Arc<TokioMutex<ProjectResearchAgent>>`.
-- **ProjectResearchPanel**: Frontend component that shows loading state, then renders web results and gem suggestions.
+- **ProjectResearchAgent**: A persistent agent (like `CoPilotAgent`) that manages two-phase research, summarization, and chat for a project. Registered in Tauri state as `Arc<TokioMutex<ProjectResearchAgent>>`.
+- **ProjectResearchChat**: Frontend component — a chat interface in the RightPanel with rich message rendering (topic chips, web result cards, gem suggestion cards).
 
 ## Frozen Design Decisions
 
@@ -32,9 +32,11 @@ These decisions were made during design discussion (2026-03-01):
 5. **Graceful degradation.** If web search is unavailable (no API key, provider down), gem suggestions still work. The UI shows a note instead of failing entirely.
 6. **Logging via `eprintln!`.** Uses the existing file-based logging system with `Projects/Research:` prefix for the agent and `Search/Tavily:` prefix for the web provider.
 7. **`reqwest` for HTTP.** Tavily API calls use the `reqwest` crate (already in `Cargo.toml`).
-8. **Agent-based architecture.** The Research Assistant is a persistent agent (`ProjectResearchAgent`) that can be invoked independently on any project at any time — not just on project creation. It supports research, summarize, and chat actions.
-9. **`Chatable` for project chat.** `ProjectChatSource` implements the existing `Chatable` trait, enabling the generic `Chatbot` engine to chat about project content. Follows the `RecordingChatSource` pattern exactly.
-10. **Agent in Tauri state.** `ProjectResearchAgent` is registered as `Arc<TokioMutex<ProjectResearchAgent>>` in Tauri managed state, following the same pattern as `CoPilotAgent` (which uses `Arc<TokioMutex<CoPilotAgent>>`).
+8. **Chat-first architecture.** The Research Agent lives in the RightPanel as a conversational collaborator. Research is a conversation, not a form submission.
+9. **Two-phase research flow.** `suggest_topics()` generates the opening message, `run_research(topics)` executes on user-curated topics. The user controls what gets searched.
+10. **`Chatable` for project chat.** `ProjectChatSource` implements the existing `Chatable` trait, enabling the generic `Chatbot` engine to chat about project content. Follows the `RecordingChatSource` pattern exactly.
+11. **Agent in Tauri state.** `ProjectResearchAgent` is registered as `Arc<TokioMutex<ProjectResearchAgent>>` in Tauri managed state, following the same pattern as `CoPilotAgent` (which uses `Arc<TokioMutex<CoPilotAgent>>`).
+12. **Frontend intent detection (v1).** Keywords like "search"/"go ahead" trigger research, "summarize" triggers summary, everything else adds topics. Upgradeable to LLM tool-calling in v2.
 
 ---
 
@@ -127,39 +129,44 @@ These decisions were made during design discussion (2026-03-01):
 
 ---
 
-## Requirement 6: ProjectResearchAgent
+## Requirement 6: ProjectResearchAgent — Two-Phase Research
 
-**User Story:** As the Jarvis system, I need a persistent agent that manages research, summarization, and chat for projects, so these capabilities are available independently and on demand — not just at project creation.
+**User Story:** As the Jarvis system, I need a persistent agent that manages two-phase research (suggest topics → execute on user-curated topics), summarization, and chat for projects, so these capabilities are available as a conversational collaborator.
 
 ### Acceptance Criteria
 
 1. THE System SHALL create `src/agents/project_agent.rs` containing the `ProjectResearchAgent` struct
-2. THE `ProjectResearchAgent` SHALL hold references to all required providers: `Arc<dyn ProjectStore>`, `Arc<dyn GemStore>`, `Arc<dyn IntelProvider>`, `Arc<dyn SearchResultProvider>`
-3. THE agent SHALL hold an internal `Chatbot` instance for managing chat sessions
-4. THE agent SHALL expose a `research` method that:
-   a. Accepts a `project_id: String`
+2. THE `ProjectResearchAgent` SHALL hold references to all required providers: `Arc<dyn ProjectStore>`, `Arc<dyn GemStore>`, `Arc<dyn IntelProvider>`, `Arc<dyn SearchResultProvider>`, `Arc<IntelQueue>`
+3. THE agent SHALL hold an internal `Chatbot` instance and a `HashMap<String, ProjectChatSource>` for chat sessions
+4. THE agent SHALL expose a `suggest_topics` method that:
+   a. Accepts a `project_id: &str`
    b. Loads the project via `ProjectStore::get`
    c. Generates search topics via `IntelProvider::chat` (3-5 specific queries from project metadata)
-   d. If `search_provider.supports_web_search()`, calls `search_provider.web_search(topic, 5)` for each topic
-   e. Deduplicates web results by URL
-   f. Calls `search_provider.search(project.title, 20)` for gem suggestions
-   g. Enriches gem results with `GemPreview` data (same pattern as `search_gems` command)
-   h. Returns `ProjectResearchResults { web_results, suggested_gems, topics_generated }`
-5. THE agent SHALL expose a `summarize` method that:
-   a. Accepts a `project_id: String`
+   d. Parses the JSON array response (strips markdown code fences if present)
+   e. Returns `Result<Vec<String>, String>`
+5. THE agent SHALL expose a `run_research` method that:
+   a. Accepts `project_id: &str` and `topics: Vec<String>` (user-curated)
+   b. If `search_provider.supports_web_search()`, calls `search_provider.web_search(topic, 5)` for each topic
+   c. Deduplicates web results by URL
+   d. Calls `search_provider.search(project.title, 20)` for gem suggestions
+   e. Enriches gem results with full gem data (same pattern as `search_gems` command)
+   f. Returns `ProjectResearchResults { web_results, suggested_gems, topics_searched }`
+6. THE agent SHALL expose a `summarize` method that:
+   a. Accepts a `project_id: &str`
    b. Loads the project and its associated gems
-   c. Assembles all gem content (titles, descriptions, summaries from `ai_enrichment`)
-   d. Calls `IntelProvider::chat` with a summarization prompt
-   e. Returns the summary as a `String`
-6. THE agent SHALL expose chat lifecycle methods:
+   c. Returns early with friendly message if 0 gems
+   d. Assembles all gem content (titles, descriptions, summaries from `ai_enrichment`)
+   e. Calls `IntelProvider::chat` with a summarization prompt
+   f. Returns the summary as a `String`
+7. THE agent SHALL expose chat lifecycle methods:
    a. `start_chat(project_id)` — creates a `ProjectChatSource`, starts a `Chatbot` session, returns session_id
    b. `send_chat_message(session_id, message)` — delegates to `Chatbot::send_message` via the `ProjectChatSource` and `IntelQueue`
    c. `get_chat_history(session_id)` — delegates to `Chatbot::get_history`
    d. `end_chat(session_id)` — delegates to `Chatbot::end_session`
-7. ALL operations SHALL log via `eprintln!` with prefix `Projects/Research:`
-8. THE `ProjectResearchAgent` SHALL be re-exported from `src/agents/mod.rs`
-9. IF web search is not supported, THE agent SHALL skip web search and return empty `web_results` — it SHALL NOT fail
-10. IF any individual web search call fails, THE agent SHALL log the error and continue with remaining topics
+8. ALL operations SHALL log via `eprintln!` with prefix `Projects/Research:`
+9. THE `ProjectResearchAgent` SHALL be re-exported from `src/agents/mod.rs`
+10. IF web search is not supported, THE agent SHALL skip web search and return empty `web_results` — it SHALL NOT fail
+11. IF any individual web search call fails, THE agent SHALL log the error and continue with remaining topics
 
 ---
 
@@ -169,27 +176,32 @@ These decisions were made during design discussion (2026-03-01):
 
 ### Acceptance Criteria
 
-1. THE System SHALL expose a `get_project_research` Tauri command accepting `project_id: String`
+1. THE System SHALL expose a `suggest_project_topics` Tauri command accepting `project_id: String`
+   - SHALL use `State<'_, Arc<TokioMutex<ProjectResearchAgent>>>`
+   - SHALL return `Result<Vec<String>, String>`
+   - SHALL delegate to `agent.suggest_topics(project_id)`
+2. THE System SHALL expose a `run_project_research` Tauri command accepting `project_id: String` and `topics: Vec<String>`
    - SHALL use `State<'_, Arc<TokioMutex<ProjectResearchAgent>>>`
    - SHALL return `Result<ProjectResearchResults, String>`
-   - SHALL delegate to `agent.research(project_id)`
-2. THE System SHALL expose a `get_project_summary` Tauri command accepting `project_id: String`
+   - SHALL delegate to `agent.run_research(project_id, topics)`
+3. THE System SHALL expose a `get_project_summary` Tauri command accepting `project_id: String`
    - SHALL use `State<'_, Arc<TokioMutex<ProjectResearchAgent>>>`
    - SHALL return `Result<String, String>`
    - SHALL delegate to `agent.summarize(project_id)`
-3. THE System SHALL expose a `start_project_chat` Tauri command accepting `project_id: String`
+4. THE System SHALL expose a `start_project_chat` Tauri command accepting `project_id: String`
    - SHALL return `Result<String, String>` (the session_id)
    - SHALL delegate to `agent.start_chat(project_id)`
-4. THE System SHALL expose a `send_project_chat_message` Tauri command accepting `session_id: String` and `message: String`
+5. THE System SHALL expose a `send_project_chat_message` Tauri command accepting `session_id: String` and `message: String`
    - SHALL return `Result<String, String>` (the assistant's response)
    - SHALL delegate to `agent.send_chat_message(session_id, message)`
-5. THE System SHALL expose a `get_project_chat_history` Tauri command accepting `session_id: String`
+6. THE System SHALL expose a `get_project_chat_history` Tauri command accepting `session_id: String`
    - SHALL return `Result<Vec<ChatMessage>, String>`
    - SHALL delegate to `agent.get_chat_history(session_id)`
-6. THE System SHALL expose an `end_project_chat` Tauri command accepting `session_id: String`
+7. THE System SHALL expose an `end_project_chat` Tauri command accepting `session_id: String`
    - SHALL delegate to `agent.end_chat(session_id)`
-7. ALL commands SHALL be registered in `lib.rs` in the `generate_handler!` macro
-8. THE `ProjectResearchAgent` SHALL be registered in Tauri state as `Arc<TokioMutex<ProjectResearchAgent>>` during app setup in `lib.rs`
+8. ALL commands SHALL be registered in `lib.rs` in the `generate_handler!` macro
+9. THE `ProjectResearchAgent` SHALL be registered in Tauri state as `Arc<TokioMutex<ProjectResearchAgent>>` during app setup in `lib.rs`
+10. THE `intel_queue` SHALL be wrapped in `Arc` before registration so the agent can hold a reference
 
 ---
 
@@ -201,69 +213,71 @@ These decisions were made during design discussion (2026-03-01):
 
 1. THE System SHALL add the following interfaces to `src/state/types.ts`:
    - `WebSearchResult` with fields: `title: string`, `url: string`, `snippet: string`, `source_type: 'Paper' | 'Article' | 'Video' | 'Other'`, `domain: string`, `published_date: string | null`
-   - `ProjectResearchResults` with fields: `web_results: WebSearchResult[]`, `suggested_gems: GemSearchResult[]`, `topics_generated: string[]`
+   - `ProjectResearchResults` with fields: `web_results: WebSearchResult[]`, `suggested_gems: GemSearchResult[]`, `topics_searched: string[]`
 2. ALL new types SHALL be exported from `types.ts`
 3. THE types SHALL match the Rust struct field names exactly (snake_case)
 
 ---
 
-## Requirement 9: ProjectResearchPanel Component
+## Requirement 9: ProjectResearchChat Component — Conversational Research UI
 
-**User Story:** As a user who just created a project, I want to see relevant web resources and matching gems from my library, so I have a starting point for my research without manual searching.
+**User Story:** As a user who opens a project, I want to interact with a research assistant through a chat interface where it suggests topics, I refine them through dialogue, and research results appear as rich cards — so research feels like a collaboration, not a form submission.
 
 ### Acceptance Criteria
 
-1. THE System SHALL create a `ProjectResearchPanel` component rendered inside `ProjectGemList`
-2. THE component SHALL activate when:
-   a. A project was just created (0 gems and 0 prior research), OR
-   b. The user clicks a "Research" button in the project toolbar
-3. ON activation, THE component SHALL call `invoke<ProjectResearchResults>('get_project_research', { projectId })`
-4. WHILE loading, THE component SHALL render a spinner with text "Researching your project..." and subtext "Finding relevant articles, papers, videos, and gems..."
-5. ON success, THE component SHALL render two collapsible sections:
-   a. **"Suggested from the web"** — `WebSearchResult` cards showing title, snippet, domain badge, and source type icon. Clicking a card opens the URL in the system browser via `shell.open`
-   b. **"From your gem library"** — `GemSearchResult` cards with an "Add to Project" button. Clicking "Add" calls `invoke('add_gems_to_project', { projectId, gemIds: [gemId] })` and updates the card to show "Added" state
-6. IF `web_results` is empty, THE web section SHALL show: "No web resources found. Try refining your project description."
-7. IF `suggested_gems` is empty, THE gem section SHALL show: "No matching gems in your library yet."
-8. IF web search is not configured (empty `web_results` and `supports_web_search` would be false), THE component SHALL show gem suggestions only with a subtle note: "Web search not configured."
-9. ON error, THE component SHALL show an inline error: "Research failed: {error}. You can still add gems manually."
+1. THE System SHALL create a `ProjectResearchChat` component rendered in the RightPanel when a project is selected
+2. ON mount, THE component SHALL call `invoke('suggest_project_topics', { projectId })` and display the agent's opening message with numbered topic chips
+3. EACH topic chip SHALL have a remove button to drop that topic
+4. THE user SHALL be able to type new topics which get added to the topic list
+5. WHEN the user says "search" / "go ahead" / "find", THE component SHALL call `invoke('run_project_research', { projectId, topics })` with the current topic list
+6. RESEARCH results SHALL render inline in the chat as:
+   a. **Web result cards** — source type badge, domain, title, snippet. Clicking opens URL via `shell.open`
+   b. **Gem suggestion cards** — source badge, title, "Add to Project" button. Clicking "Add" calls `invoke('add_gems_to_project', ...)` and updates to "Added" state
+7. WHEN the user says "summarize" / "summary", THE component SHALL call `invoke('get_project_summary', { projectId })` and display the result
+8. THE chat SHALL show a loading spinner ("Analyzing your project...") while initial topics are being generated
+9. THE chat SHALL auto-scroll to the latest message
+10. WHILE loading, THE input SHALL be disabled and a "Thinking..." indicator shown
+11. IF topic suggestion fails, THE component SHALL show an error message and allow the user to type their own topics
+12. IF research fails, THE component SHALL show an error message in the chat
 
 ---
 
-## Requirement 10: Research & Summarize Buttons in Project Toolbar
+## Requirement 10: RightPanel and App Integration for Projects
 
-**User Story:** As a user viewing an existing project, I want to re-run the research assistant and generate project summaries on demand, so I can discover new resources and get overviews as my project evolves.
+**User Story:** As a user viewing a project, I want the research chat to appear in the right panel, and when I select a gem, I want to toggle between the research chat and gem detail — so the research assistant is always accessible.
 
 ### Acceptance Criteria
 
-1. THE `ProjectGemList` toolbar SHALL include a "Research" button alongside the existing search input and "+ Add Gems" button
-2. CLICKING the "Research" button SHALL trigger the `ProjectResearchPanel` component (same as auto-trigger on project creation)
-3. THE "Research" button SHALL be disabled while research is loading
-4. THE `ProjectGemList` toolbar SHALL include a "Summarize" button
-5. CLICKING the "Summarize" button SHALL call `invoke<string>('get_project_summary', { projectId })`
-6. THE summary result SHALL be displayed inline in a dismissible panel above the gem list
-7. WHILE summarization is loading, the "Summarize" button SHALL be disabled with a loading indicator
-8. RESULTS from research/summary runs SHALL be displayed inline above the existing gem list, dismissible by the user
+1. WHEN `activeNav === 'projects'` and a project is selected, THE RightPanel SHALL show the `ProjectResearchChat` component
+2. WHEN a project is selected AND a gem is selected, THE RightPanel SHALL show tabs: "Research" (default) and "Detail"
+3. THE "Research" tab SHALL render `ProjectResearchChat`
+4. THE "Detail" tab SHALL render the existing `GemDetailPanel`
+5. WHEN no project is selected, THE RightPanel SHALL show a placeholder: "Select a project to start researching"
+6. THE `selectedProjectId` and `selectedProjectTitle` state SHALL be lifted from `ProjectsContainer` to `App.tsx` so both `ProjectsContainer` and `RightPanel` can access them
+7. `ProjectsContainer` SHALL emit `onProjectSelect(id, title)` when a project is clicked or created
+8. SWITCHING projects SHALL remount `ProjectResearchChat` to reset the conversation
 
 ---
 
-## Requirement 11: CSS Styling for Research Panel
+## Requirement 11: CSS Styling for Research Chat
 
-**User Story:** As a user, I want the research results to look consistent with the rest of Jarvis, following the dark theme.
+**User Story:** As a user, I want the research chat interface to look consistent with the rest of Jarvis, following the dark theme and matching existing chat and card patterns.
 
 ### Acceptance Criteria
 
-1. THE loading spinner SHALL be centered vertically and horizontally within the `ProjectGemList` area
-2. WEB result cards SHALL display:
-   - Source type icon/badge (distinct for Paper, Article, Video, Other)
+1. THE research chat layout SHALL be a flex column filling the available height
+2. TOPIC chips SHALL display as bordered rows with topic text and a remove button, with hover effect on the remove button
+3. WEB result cards SHALL display:
+   - Source type badge (distinct colors for Paper/purple, Article/blue, Video/red, Other/gray)
    - Domain name in muted text
    - Title as primary text
-   - Snippet truncated to 3 lines
-   - Hover effect matching existing card patterns
-3. GEM suggestion cards SHALL reuse existing `GemCard` styling with an added "Add to Project" action button
-4. THE "Added" state on gem cards SHALL show a checkmark or "Added" label with muted styling
-5. COLLAPSIBLE section headers SHALL match existing panel heading styles
-6. THE summary panel SHALL use blockquote styling consistent with the dark theme
-7. ALL new CSS SHALL be added to `App.css`
+   - Snippet truncated to 2 lines
+   - Hover effect with accent border
+4. GEM suggestion cards SHALL display as flex rows with source badge, title (truncated), and "Add" / "Added" button
+5. THE "Added" state SHALL show muted styling with no hover effect
+6. SYSTEM messages (topic add/remove) SHALL be small, centered, muted, and italic
+7. THE loading state SHALL be centered with a spinner and muted text
+8. ALL new CSS SHALL be added to `App.css`
 
 ---
 
@@ -278,6 +292,7 @@ These decisions were made during design discussion (2026-03-01):
 7. **No web result persistence**: Web results are ephemeral — fetched on demand, not stored in the database. Re-running research re-fetches.
 8. **Sequential web search**: Topic searches run sequentially to respect API rate limits. Parallel execution is a future optimization.
 9. **Agent in Tauri state**: `ProjectResearchAgent` follows the `CoPilotAgent` registration pattern — `Arc<TokioMutex<ProjectResearchAgent>>` in managed state.
+10. **IntelQueue Arc wrapping**: `intel_queue` must be wrapped in `Arc` before registration so the agent can hold a reference.
 
 ## Out of Scope
 
@@ -288,4 +303,5 @@ These decisions were made during design discussion (2026-03-01):
 5. **Custom topic count configuration** — hardcoded to 3-5 topics from the LLM prompt.
 6. **Source-type-specific LLM prompting** — topics are general; source classification is done by domain after search.
 7. **Alternative web search providers** — only Tavily is implemented. Brave/SerpAPI/Searx are future additions that just implement `web_search` on a new `SearchResultProvider`.
-8. **Project chat UI** — the chat interface (chat panel, message bubbles, input) is a future requirement. This spec only defines the backend `ProjectChatSource` + agent chat methods and Tauri commands.
+8. **LLM tool-calling for intent detection** — v1 uses keyword matching. v2 can upgrade to structured tool-calling for more robust intent detection.
+9. **Chat persistence across app restarts** — research chat is ephemeral in v1. Can be persisted via existing Chatbot session logs in v2.

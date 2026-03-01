@@ -133,7 +133,26 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 - **Module structure**: `src/search/` with `provider.rs` (trait + types), `fts_provider.rs`, `qmd_provider.rs`, `commands.rs`, `mod.rs`
 - **Tauri commands**: `search_gems`, `check_search_availability`, `setup_semantic_search`, `rebuild_search_index`
 
-### 10. Application Logging
+### 10. Projects — Organize, Research & Chat
+- **Create projects** with title, description, and objective to group related gems under a shared research goal
+- **Manage project lifecycle** — status tracking (active, paused, completed, archived), inline editing, deletion with cascade (gems preserved)
+- **Add gems to projects** from multiple entry points: project gem list modal, Browser gist save, Recording gem save
+- **Search within project** — full-text search across project gems (FTS5, 300ms debounce)
+- **Audio playback** — recording-associated gems show Play/Stop button inline in project gem cards
+- **Research Agent** — two-phase AI-driven research workflow:
+  - **Phase A: Topic Suggestion** — LLM generates 3–5 targeted search queries from project title/description/objective
+  - **Phase B: Execute Research** — runs Tavily web search on each curated topic (5 results per topic) + searches gem library for relevant matches; combines and deduplicates results
+  - User can curate topics (remove, add custom) before executing search
+  - Web results open in browser; gem suggestions have "+ Add" button to add directly to project
+- **Conversational research chat** — keyword-based intent detection: "search"/"find" runs research, "summarize" generates executive summary, anything else becomes a new topic
+- **Project summarization** — LLM generates 200–400 word executive summary covering project goal, key themes, notable findings, and research gaps
+- **Project chat** — Q&A over all project gems via `Chatable` trait; context includes project metadata + all gem titles/descriptions/summaries
+- **Persistent research state** — chat messages, curated topics, and added gem IDs auto-saved (1s debounce) to `research_state.json`; restored on revisit; "New Research" button clears and re-initializes
+- **SQLite storage** — `projects` table + `project_gems` junction table with cascade deletes and indices on status/updated_at
+- **Right panel integration** — Research tab (chat) + Detail tab (gem) + knowledge file tabs; tabbed interface matches gems/recordings pattern
+- **Left nav** — Projects tab (📁) between Gems and YouTube
+
+### 11. Application Logging
 - **File-based logging** — captures all `eprintln!` output to timestamped log files
 - Log files at `~/Library/Application Support/com.jarvis.app/logs/jarvis-YYYY-MM-DD_HH-MM-SS.log`
 - **New log file per app launch** — each session gets its own log
@@ -143,7 +162,7 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 - **Zero-config** — initialized at very start of `run()` before any other code runs, all existing `eprintln!` calls throughout the codebase automatically captured
 - Module: `src/logging.rs` with `init()`, `logs_dir()`, `rotate_logs()`
 
-### 11. Model Management
+### 12. Model Management
 - **Whisper models**: Download/delete OpenAI Whisper models from Hugging Face
 - **WhisperKit models**: Download/manage Apple WhisperKit models
 - **LLM models**: Download/delete/switch MLX-compatible LLMs (Qwen3, Qwen2.5-Omni 3B/7B, etc.)
@@ -151,7 +170,7 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 - Switch active LLM model at runtime
 - **7B conv weight auto-fix** — auto-detects and corrects PyTorch→MLX weight layout mismatch after model load
 
-### 12. Settings & Configuration
+### 13. Settings & Configuration
 - Transcription engine selection (whisper-rs / whisperkit / mlx-omni)
 - VAD enable/disable with threshold tuning
 - Whisper model selection
@@ -171,7 +190,7 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 
 | Left Nav (180px, collapsible) | Center Panel (flex) | Right Panel (resizable, 250px–60%) |
 |---|---|---|
-| Record, Recordings, Gems, YouTube, Browser, Settings tabs | Main content for active section | Context panel: live transcript, recording details, gem details |
+| Record, Recordings, Gems, Projects, YouTube, Browser, Settings tabs | Main content for active section | Context panel: live transcript, recording details, gem details, research chat |
 
 - Dark theme with design token system (CSS custom properties)
 - Self-hosted Inter + JetBrains Mono fonts
@@ -179,6 +198,7 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 - Tabbed right panel during recording: **Transcript** and **Co-Pilot** tabs with notification dot for unseen updates
 - Tabbed right panel for recordings: **Details** and **Chat** tabs when a chat session is active
 - Tabbed right panel for gems: **Detail** + open knowledge file tabs (closeable, lazy-loaded)
+- Tabbed right panel for projects: **Research** (chat) + **Detail** (gem) + knowledge file tabs when a gem is selected
 - Co-Pilot Card Stack with animated card entrance, auto-collapse timers, hover-to-pause, and keyboard-accessible expand/collapse
 - Notification badge on YouTube tab when video detected
 - Error toasts for runtime issues (MLX sidecar crashes)
@@ -211,6 +231,8 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 | WhisperKit models | `~/.cache/huggingface/hub/` |
 | Knowledge files | `~/Library/Application Support/com.jarvis.app/knowledge/{gem_id}/` |
 | Co-Pilot agent logs | `~/Library/Application Support/com.jarvis.app/agent_logs/` |
+| Project research state | `~/Library/Application Support/com.jarvis.app/projects/{project_id}/research_state.json` |
+| Project chat sessions | `~/Library/Application Support/com.jarvis.app/projects/{project_id}/chat_sessions/` |
 | Application logs | `~/Library/Application Support/com.jarvis.app/logs/` |
 | QMD search models | `~/.cache/qmd/models/` (~2.1GB) |
 | Settings | `~/.jarvis/settings.json` |
@@ -221,14 +243,15 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 
 ## Backend Commands (Tauri RPC)
 
-**65+ registered commands** across these domains:
+**85+ registered commands** across these domains:
 
 - **Recording** (5): start, stop, list, delete, convert to WAV
 - **Transcription** (4): get transcript, status, transcribe recording, transcribe gem
-- **Gems** (10): save, list, search, filter by tag, get, delete, enrich, save recording gem, check recording gem, batch check
+- **Gems** (11): save, list, search, filter by tag, get, delete, enrich, save recording gem, check recording gem, batch check, update title
 - **Search** (4): search gems (trait-based), check search availability, setup semantic search, rebuild search index
 - **Chat** (5): start chat with recording, send message, get history, end session, get saved transcript
 - **Co-Pilot** (4): start, stop, get state, dismiss question
+- **Projects** (16): create, list, get, update, delete project; add/remove/get/search project gems; get gem projects; suggest topics, run research, get summary; start/send/get/end project chat; save/load/clear research state
 - **AI/Intelligence** (9): availability check, MLX dependency check, venv setup/reset, MLX status, list/download/cancel/delete/switch LLM models
 - **Model Management** (7): list/download/cancel/delete Whisper models, WhisperKit status/list/download
 - **Browser** (10): start/stop observer, status, settings, list tabs, fetch YouTube gist, prepare gist, prepare with Claude, export, capture Claude, check Claude panel, accessibility permission
@@ -253,3 +276,6 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 - **QMD CLI mode**: Semantic search shells out to the `qmd` binary — no library dependency, no HTTP server. Simple process spawning with `tokio::process::Command`
 - **Single search provider**: One provider active at a time, selected on startup. No per-query mode toggle. FTS5 always available as fallback
 - **Tee-based logging**: OS-level fd redirection (pipe + dup2) captures all stderr to log files. Zero code changes needed — every existing `eprintln!` automatically logged
+- **Two-phase research**: Topic suggestion separated from search execution — user curates topics before spending API calls. Avoids wasted searches on irrelevant queries
+- **Opaque JSON persistence**: Research chat state stored as opaque JSON string on Rust side — no need to duplicate complex TypeScript types in Rust. Frontend owns the schema
+- **Multi-entry gem-to-project**: Gems can be added to projects from project gem list, Browser gist save, and Recording gem save — consistent picker pattern across all flows

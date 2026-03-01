@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { BrowserTab, PageGist, SourceType, Gem, AvailabilityResult, ClaudePanelStatus } from '../state/types';
+import type { BrowserTab, PageGist, SourceType, Gem, AvailabilityResult, ClaudePanelStatus, ProjectPreview } from '../state/types';
 
 interface BrowserToolProps {
   onClose?: () => void;
@@ -43,6 +43,11 @@ function GistCard({ gist, onCopy, onDismiss }: { gist: PageGist; onCopy: () => v
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [aiAvailability, setAiAvailability] = useState<AvailabilityResult | null>(null);
+  const [savedGemId, setSavedGemId] = useState<string | null>(null);
+  const [projects, setProjects] = useState<ProjectPreview[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string>('');
+  const [addingToProject, setAddingToProject] = useState(false);
+  const [addedToProject, setAddedToProject] = useState<string | null>(null);
 
   // Check AI availability on mount
   useEffect(() => {
@@ -67,14 +72,37 @@ function GistCard({ gist, onCopy, onDismiss }: { gist: PageGist; onCopy: () => v
   const handleSave = async () => {
     setSaving(true);
     setSaveError(null);
-    
+
     try {
-      await invoke<Gem>('save_gem', { gist });
+      const gem = await invoke<Gem>('save_gem', { gist });
       setSaved(true);
+      setSavedGemId(gem.id);
+
+      // Fetch projects for the "Add to Project" picker
+      try {
+        const projectList = await invoke<ProjectPreview[]>('list_projects');
+        setProjects(projectList.filter(p => p.status === 'active'));
+      } catch {
+        // Non-fatal: project picker just won't appear
+      }
     } catch (err) {
       setSaveError(String(err));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleAddToProject = async () => {
+    if (!savedGemId || !selectedProjectId) return;
+    setAddingToProject(true);
+    try {
+      await invoke('add_gems_to_project', { projectId: selectedProjectId, gemIds: [savedGemId] });
+      const project = projects.find(p => p.id === selectedProjectId);
+      setAddedToProject(project?.title || 'project');
+    } catch (err) {
+      console.error('Failed to add gem to project:', err);
+    } finally {
+      setAddingToProject(false);
     }
   };
 
@@ -111,8 +139,8 @@ function GistCard({ gist, onCopy, onDismiss }: { gist: PageGist; onCopy: () => v
       )}
       <div className="gist-actions">
         <button onClick={onCopy} className="copy-button">Copy</button>
-        <button 
-          onClick={handleSave} 
+        <button
+          onClick={handleSave}
           className="save-gem-button"
           disabled={saved || saving}
         >
@@ -120,7 +148,7 @@ function GistCard({ gist, onCopy, onDismiss }: { gist: PageGist; onCopy: () => v
         </button>
         <button onClick={onDismiss} className="gist-dismiss-button">Dismiss</button>
       </div>
-      {aiAvailability?.available && (
+      {aiAvailability?.available && !saved && (
         <div className="ai-enrichment-notice">
           ✨ AI enrichment will be added on save
         </div>
@@ -128,6 +156,32 @@ function GistCard({ gist, onCopy, onDismiss }: { gist: PageGist; onCopy: () => v
       {saveError && (
         <div className="error-state" style={{ marginTop: '8px' }}>
           {saveError}
+        </div>
+      )}
+      {saved && projects.length > 0 && !addedToProject && (
+        <div className="gist-add-to-project">
+          <select
+            value={selectedProjectId}
+            onChange={(e) => setSelectedProjectId(e.target.value)}
+            className="project-select"
+          >
+            <option value="">Add to project...</option>
+            {projects.map(p => (
+              <option key={p.id} value={p.id}>{p.title}</option>
+            ))}
+          </select>
+          <button
+            onClick={handleAddToProject}
+            disabled={!selectedProjectId || addingToProject}
+            className="add-to-project-button"
+          >
+            {addingToProject ? 'Adding...' : 'Add'}
+          </button>
+        </div>
+      )}
+      {addedToProject && (
+        <div className="added-to-project-notice">
+          Added to {addedToProject}
         </div>
       )}
     </div>

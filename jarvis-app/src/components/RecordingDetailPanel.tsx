@@ -1,4 +1,61 @@
-import { RecordingMetadata, RecordingTranscriptionState } from '../state/types';
+import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { RecordingMetadata, RecordingTranscriptionState, ProjectPreview } from '../state/types';
+
+function AddToProjectPicker({ gemId }: { gemId: string }) {
+  const [projects, setProjects] = useState<ProjectPreview[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [addedTo, setAddedTo] = useState<string | null>(null);
+
+  useEffect(() => {
+    invoke<ProjectPreview[]>('list_projects')
+      .then(list => setProjects(list.filter(p => p.status === 'active')))
+      .catch(() => {});
+  }, []);
+
+  const handleAdd = async () => {
+    if (!selectedProjectId) return;
+    setAdding(true);
+    try {
+      await invoke('add_gems_to_project', { projectId: selectedProjectId, gemIds: [gemId] });
+      const project = projects.find(p => p.id === selectedProjectId);
+      setAddedTo(project?.title || 'project');
+    } catch (err) {
+      console.error('Failed to add gem to project:', err);
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  if (projects.length === 0) return null;
+
+  if (addedTo) {
+    return <div className="added-to-project-notice">Added to {addedTo}</div>;
+  }
+
+  return (
+    <div className="gist-add-to-project">
+      <select
+        value={selectedProjectId}
+        onChange={(e) => setSelectedProjectId(e.target.value)}
+        className="project-select"
+      >
+        <option value="">Add to project...</option>
+        {projects.map(p => (
+          <option key={p.id} value={p.id}>{p.title}</option>
+        ))}
+      </select>
+      <button
+        onClick={handleAdd}
+        disabled={!selectedProjectId || adding}
+        className="add-to-project-button"
+      >
+        {adding ? 'Adding...' : 'Add'}
+      </button>
+    </div>
+  );
+}
 
 interface RecordingDetailPanelProps {
   recording: RecordingMetadata;
@@ -115,6 +172,9 @@ export default function RecordingDetailPanel({
               <span className="gem-indicator">💎 Saved as Gem</span>
             )}
           </div>
+          {recordingState.gemId && (
+            <AddToProjectPicker gemId={recordingState.gemId} />
+          )}
         </div>
       )}
 

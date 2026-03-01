@@ -2031,14 +2031,42 @@ input, select, textarea {
 
 /* Gem Audio Player */
 .gem-audio-player {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid #e9ecef;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-primary, #e9ecef);
 }
 
 .gem-audio-player audio {
   width: 100%;
   height: 32px;
+}
+
+.gem-play-button {
+  padding: 4px 12px;
+  font-size: 12px;
+  border-radius: var(--radius-sm, 4px);
+  border: 1px solid var(--accent-primary, #4a9eff);
+  background: transparent;
+  color: var(--accent-primary, #4a9eff);
+  cursor: pointer;
+}
+
+.gem-play-button:hover:not(:disabled) {
+  background: var(--accent-primary, #4a9eff);
+  color: #fff;
+}
+
+.gem-play-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.gem-card-audio-controls {
+  margin-top: 6px;
+}
+
+.gem-detail-audio {
+  padding: 12px 0;
 }
 
 /* AI Enrichment Styles */
@@ -4263,9 +4291,10 @@ input, select, textarea {
 /* Project Gem List — Right Side */
 .project-gem-list {
   flex: 1;
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
 
 .project-gem-list.empty-state {
@@ -4673,4 +4702,326 @@ input, select, textarea {
 .modal-gem-list::-webkit-scrollbar-thumb:hover,
 .project-dropdown::-webkit-scrollbar-thumb:hover {
   background: var(--accent-hover);
+}
+/* === Research Chat Styles === */
+
+/* ── Research Chat Layout ── */
+
+.research-chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.research-chat-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: var(--space-3);
+  color: var(--text-secondary);
+}
+
+.research-chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.research-chat-messages::-webkit-scrollbar {
+  width: 6px;
+}
+
+.research-chat-messages::-webkit-scrollbar-track {
+  background: var(--bg-surface);
+  border-radius: var(--radius-sm);
+}
+
+.research-chat-messages::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: var(--radius-sm);
+}
+
+.research-chat-messages::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+
+/* ── Topic Chips ── */
+
+.research-topics-list {
+  margin-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.research-topic-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-default);
+  font-size: var(--text-sm);
+}
+
+.topic-remove {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: var(--text-xs);
+  padding: 2px 6px;
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.topic-remove:hover {
+  color: var(--error);
+}
+
+.research-go-button {
+  margin-top: var(--space-2);
+  align-self: flex-end;
+}
+
+/* ── System Messages ── */
+
+.chat-system-msg {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-align: center;
+  padding: var(--space-1) 0;
+  font-style: italic;
+}
+
+/* ── Research Sections in Chat ── */
+
+.research-section {
+  margin-top: var(--space-3);
+}
+
+.research-section-title {
+  font-size: 11px;
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+  margin: 0 0 var(--space-2) 0;
+}
+
+/* ── Web Result Cards ── */
+
+.web-result-card {
+  padding: 10px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  margin-bottom: 6px;
+  border: 1px solid var(--border-default);
+  transition: background var(--duration-fast) var(--ease-out),
+              border-color var(--duration-fast) var(--ease-out);
+}
+
+.web-result-card:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent-primary);
+}
+
+.web-result-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.source-type-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+}
+
+.source-paper { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
+.source-article { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
+.source-video { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+.source-other { background: rgba(107, 114, 128, 0.15); color: #9ca3af; }
+
+.web-result-domain {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.web-result-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  margin-bottom: 2px;
+}
+
+.web-result-snippet {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ── Gem Suggestion Cards ── */
+
+.research-gem-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) 10px;
+  margin-bottom: var(--space-1);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+}
+
+.research-gem-card .gem-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+}
+
+.research-gem-card .gem-title {
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.research-add-gem {
+  flex-shrink: 0;
+  padding: var(--space-1) 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-primary);
+  background: transparent;
+  color: var(--accent-primary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.research-add-gem:hover {
+  background: var(--accent-subtle);
+}
+
+.research-add-gem.added {
+  border-color: var(--text-tertiary);
+  color: var(--text-tertiary);
+  cursor: default;
+}
+
+/* ── New Research Button ── */
+
+.research-new-button {
+  flex-shrink: 0;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-out),
+              border-color var(--duration-fast) var(--ease-out);
+}
+
+.research-new-button:hover:not(:disabled) {
+  color: var(--text-secondary);
+  border-color: var(--border-strong);
+}
+
+.research-new-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── Gist: Add to Project ── */
+
+.gist-add-to-project {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.project-select {
+  flex: 1;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-default);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.add-to-project-button {
+  flex-shrink: 0;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-primary);
+  background: transparent;
+  color: var(--accent-primary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.add-to-project-button:hover:not(:disabled) {
+  background: var(--accent-subtle);
+}
+
+.add-to-project-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.added-to-project-notice {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+/* ── Gem Title Inline Edit ── */
+
+.gem-title-editable {
+  cursor: pointer;
+  border-bottom: 1px dashed transparent;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.gem-title-editable:hover {
+  border-bottom-color: var(--border-strong);
+}
+
+.gem-title-edit {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+}
+
+.gem-title-input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent-primary);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
 }

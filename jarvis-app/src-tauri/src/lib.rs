@@ -23,7 +23,7 @@ use files::FileManager;
 use gems::{GemStore, SqliteGemStore};
 use intelligence::{LlmModelManager, VenvManager};
 use recording::RecordingManager;
-use search::{FtsResultProvider, QmdResultProvider, SearchResultProvider};
+use search::{FtsResultProvider, QmdResultProvider, SearchResultProvider, TavilyProvider, CompositeSearchProvider};
 use settings::{ModelManager, SettingsManager};
 use shortcuts::ShortcutManager;
 use transcription::{TranscriptionConfig, TranscriptionManager, HybridProvider, WhisperKitProvider, TranscriptionProvider};
@@ -59,7 +59,7 @@ pub fn run() {
             let project_store = projects::SqliteProjectStore::new(shared_conn)
                 .map_err(|e| format!("Failed to initialize project store: {}", e))?;
             let project_store_arc = Arc::new(project_store) as Arc<dyn projects::ProjectStore>;
-            app.manage(project_store_arc);
+            app.manage(project_store_arc.clone());
             
             // Initialize Knowledge Store
             let app_data_dir = app.path().app_data_dir()
@@ -123,9 +123,10 @@ pub fn run() {
             let intel_queue = tauri::async_runtime::block_on(async {
                 intelligence::IntelQueue::new(intel_provider.clone())
             });
-            app.manage(intel_queue);
+            let intel_queue_arc = Arc::new(intel_queue);
+            app.manage(intel_queue_arc.clone());
             
-            app.manage(intel_provider);
+            app.manage(intel_provider.clone());
             
             // Wrap MlxProvider in Arc<tokio::sync::Mutex<>> for Phase 5 model switching
             // This allows switch_llm_model command to mutate the provider reference
@@ -290,13 +291,17 @@ pub fn run() {
             
             // Initialize Search Provider
             // Read search settings
-            let (search_enabled, search_accuracy) = {
+            let (search_enabled, search_accuracy, tavily_api_key) = {
                 let manager = app.state::<Arc<RwLock<SettingsManager>>>();
                 let settings = manager.read().expect("Failed to acquire settings read lock").get();
-                (settings.search.semantic_search_enabled, settings.search.semantic_search_accuracy)
+                (
+                    settings.search.semantic_search_enabled,
+                    settings.search.semantic_search_accuracy,
+                    settings.search.tavily_api_key.clone(),
+                )
             };
 
-            let search_provider: Arc<dyn SearchResultProvider> = if search_enabled {
+            let gem_provider: Arc<dyn SearchResultProvider> = if search_enabled {
                 // Try to initialize QMD provider
                 match tauri::async_runtime::block_on(QmdResultProvider::find_qmd_binary()) {
                     Some(qmd_path) => {
@@ -326,7 +331,35 @@ pub fn run() {
                 Arc::new(FtsResultProvider::new(gem_store_arc.clone()))
             };
             
+            // Build web search provider from existing settings
+            let web_provider: Option<Arc<dyn SearchResultProvider>> = tavily_api_key
+                .as_ref()
+                .filter(|k| !k.is_empty())
+                .map(|api_key| {
+                    eprintln!("Search: Tavily web search enabled");
+                    Arc::new(TavilyProvider::new(api_key.clone())) as Arc<dyn SearchResultProvider>
+                });
+
+            if web_provider.is_none() {
+                eprintln!("Search: Tavily web search disabled (no API key in settings)");
+            }
+
+            // Wrap in composite — single Arc<dyn SearchResultProvider> for all search needs
+            let search_provider: Arc<dyn SearchResultProvider> = Arc::new(
+                CompositeSearchProvider::new(gem_provider, web_provider)
+            );
+            let search_provider_for_agent = search_provider.clone();
             app.manage(search_provider);
+            
+            // ── Project Research Agent Setup ──
+            let project_agent = agents::project_agent::ProjectResearchAgent::new(
+                project_store_arc.clone(),
+                gem_store_arc.clone(),
+                intel_provider.clone(),
+                search_provider_for_agent,
+                intel_queue_arc.clone(),
+            );
+            app.manage(Arc::new(tokio::sync::Mutex::new(project_agent)));
             
             Ok(())
         })
@@ -365,6 +398,7 @@ pub fn run() {
             search::commands::setup_semantic_search,
             search::commands::rebuild_search_index,
             commands::delete_gem,
+            commands::update_gem_title,
             commands::get_gem,
             commands::enrich_gem,
             commands::transcribe_gem,
@@ -409,6 +443,16 @@ pub fn run() {
             projects::commands::remove_gem_from_project,
             projects::commands::get_project_gems,
             projects::commands::get_gem_projects,
+            projects::commands::suggest_project_topics,
+            projects::commands::run_project_research,
+            projects::commands::get_project_summary,
+            projects::commands::start_project_chat,
+            projects::commands::send_project_chat_message,
+            projects::commands::get_project_chat_history,
+            projects::commands::end_project_chat,
+            projects::commands::save_project_research_state,
+            projects::commands::load_project_research_state,
+            projects::commands::clear_project_research_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
