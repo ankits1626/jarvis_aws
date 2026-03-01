@@ -48,6 +48,7 @@ function App() {
   const [isLoadingRecordings, setIsLoadingRecordings] = useState(true);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [youtubeNotification, setYoutubeNotification] = useState(false);
+  const [youtubeVideos, setYoutubeVideos] = useState<YouTubeDetectedEvent[]>([]);
   const [toastError, setToastError] = useState<string | null>(null);
   
   // Three-panel layout state
@@ -129,14 +130,19 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.recordings.length, isLoadingRecordings]);
 
-  // Listen for youtube-video-detected events to show notification badge
+  // Listen for youtube-video-detected events to show notification badge and accumulate videos
   useTauriEvent<YouTubeDetectedEvent>(
     'youtube-video-detected',
-    useCallback(() => {
+    useCallback((payload) => {
       console.log('[App] youtube-video-detected event received, activeNav:', activeNav);
       if (activeNav !== 'youtube') {
         setYoutubeNotification(true);
       }
+      setYoutubeVideos(prev => {
+        // Deduplicate by video_id
+        if (prev.some(v => v.video_id === payload.video_id)) return prev;
+        return [payload, ...prev];
+      });
     }, [activeNav])
   );
 
@@ -862,7 +868,10 @@ function App() {
         )}
         
         {activeNav === 'youtube' && (
-          <YouTubeSection />
+          <YouTubeSection
+            detectedVideos={youtubeVideos}
+            onDismissVideo={(videoId) => setYoutubeVideos(prev => prev.filter(v => v.video_id !== videoId))}
+          />
         )}
         
         {activeNav === 'browser' && (

@@ -1,6 +1,5 @@
-import { useState, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { useTauriEvent } from '../hooks/useTauriEvent';
 import type { YouTubeGist, YouTubeDetectedEvent } from '../state/types';
 
 interface DetectedVideo extends YouTubeDetectedEvent {
@@ -11,6 +10,8 @@ interface DetectedVideo extends YouTubeDetectedEvent {
 
 interface YouTubeSectionProps {
   onClose?: () => void;
+  detectedVideos: YouTubeDetectedEvent[];
+  onDismissVideo: (videoId: string) => void;
 }
 
 interface VideoCardProps {
@@ -74,22 +75,22 @@ function VideoCard({ video, onPrepareGist, onDismiss, onCopy }: VideoCardProps) 
   );
 }
 
-export function YouTubeSection({ onClose }: YouTubeSectionProps) {
+export function YouTubeSection({ onClose, detectedVideos, onDismissVideo }: YouTubeSectionProps) {
+  // Local state extends detected videos with gist/loading/error state
   const [videos, setVideos] = useState<DetectedVideo[]>([]);
 
-  // Listen for youtube-video-detected events
-  useTauriEvent<YouTubeDetectedEvent>(
-    'youtube-video-detected',
-    useCallback((payload) => {
-      console.log('[YouTubeSection] Received youtube-video-detected event:', payload);
-      setVideos(prev => [{
-        url: payload.url,
-        video_id: payload.video_id,
-        title: payload.title,
-        author_name: payload.author_name,
-      }, ...prev]); // Add new videos at top (most recent first)
-    }, [])
-  );
+  // Sync incoming detected videos into local state (preserving gist data)
+  useEffect(() => {
+    setVideos(prev => {
+      const existingById = new Map(prev.map(v => [v.video_id, v]));
+      const merged = detectedVideos.map(dv => {
+        const existing = existingById.get(dv.video_id);
+        if (existing) return { ...existing, ...dv, gist: existing.gist, loading: existing.loading, error: existing.error };
+        return { ...dv };
+      });
+      return merged;
+    });
+  }, [detectedVideos]);
 
   const handlePrepareGist = async (index: number) => {
     const video = videos[index];
@@ -112,7 +113,9 @@ export function YouTubeSection({ onClose }: YouTubeSectionProps) {
   };
 
   const handleDismiss = (index: number) => {
+    const video = videos[index];
     setVideos(prev => prev.filter((_, i) => i !== index));
+    onDismissVideo(video.video_id);
   };
 
   const formatGist = (gist: YouTubeGist): string => {
