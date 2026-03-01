@@ -148,8 +148,20 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 - **Project summarization** — LLM generates 200–400 word executive summary covering project goal, key themes, notable findings, and research gaps
 - **Project chat** — Q&A over all project gems via `Chatable` trait; context includes project metadata + all gem titles/descriptions/summaries
 - **Persistent research state** — chat messages, curated topics, and added gem IDs auto-saved (1s debounce) to `research_state.json`; restored on revisit; "New Research" button clears and re-initializes
+- **Project Summary Checkpoints** — dedicated Summary tab for generating comprehensive, LLM-powered summaries of all project gems:
+  - **Composite document builder** — concatenates all gems' knowledge files (`gem.md`) in chronological order into one giant markdown document with project header, gem separators, and metadata
+  - **Chunked summarization** — splits composite document into ~4000-token chunks respecting gem boundaries (never splits mid-gem); each chunk summarized independently, then a merge pass combines into one cohesive summary
+  - **Single-call optimization** — if all gems fit in one chunk, skips chunking and merge — single LLM call
+  - **Q&A over summaries** — chat input lets users ask questions about the generated summary, answered using the summary + composite source document as context
+  - **Save as Gem** — save any summary as a gem with `source_type: "ProjectSummary"`, creating a searchable, reusable checkpoint with full knowledge files
+  - **`composite_summary_of_all_gems.md`** — the full composite source document is stored as a knowledge subfile alongside saved summary gems, providing provenance and searchability
+  - **Auto-save to disk** — every generated summary automatically saved as versioned files (`summary_{timestamp}.md` + `summary_{timestamp}.json`) to project summaries directory
+  - **Checkpoint persistence** — returning to the Summary tab loads the latest auto-saved summary from disk instead of showing empty state
+  - **Regeneration** — "Regenerate" button re-runs the pipeline, creating a new versioned summary; previous versions remain on disk
+  - **Four UI states**: Empty (generate button), Generating (spinner + "Analyzing gems..."), Review (summary preview + save/regenerate + Q&A), Saved (confirmation badge)
+  - **Graceful failure handling** — if LLM fails on a chunk, remaining chunks still processed; partial summary returned with failure note
 - **SQLite storage** — `projects` table + `project_gems` junction table with cascade deletes and indices on status/updated_at
-- **Right panel integration** — Research tab (chat) + Detail tab (gem) + knowledge file tabs; tabbed interface matches gems/recordings pattern
+- **Right panel integration** — Research tab (chat) + Summary tab (summary checkpoints) + Detail tab (gem) + knowledge file tabs; tabbed interface matches gems/recordings pattern
 - **Left nav** — Projects tab (📁) between Gems and YouTube
 
 ### 11. Application Logging
@@ -198,7 +210,7 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 - Tabbed right panel during recording: **Transcript** and **Co-Pilot** tabs with notification dot for unseen updates
 - Tabbed right panel for recordings: **Details** and **Chat** tabs when a chat session is active
 - Tabbed right panel for gems: **Detail** + open knowledge file tabs (closeable, lazy-loaded)
-- Tabbed right panel for projects: **Research** (chat) + **Detail** (gem) + knowledge file tabs when a gem is selected
+- Tabbed right panel for projects: **Research** (chat) + **Summary** (summary checkpoints) + **Detail** (gem) + knowledge file tabs when a gem is selected
 - Co-Pilot Card Stack with animated card entrance, auto-collapse timers, hover-to-pause, and keyboard-accessible expand/collapse
 - Notification badge on YouTube tab when video detected
 - Error toasts for runtime issues (MLX sidecar crashes)
@@ -232,6 +244,7 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 | Knowledge files | `~/Library/Application Support/com.jarvis.app/knowledge/{gem_id}/` |
 | Co-Pilot agent logs | `~/Library/Application Support/com.jarvis.app/agent_logs/` |
 | Project research state | `~/Library/Application Support/com.jarvis.app/projects/{project_id}/research_state.json` |
+| Project summary checkpoints | `~/Library/Application Support/com.jarvis.app/projects/{project_id}/summaries/` |
 | Project chat sessions | `~/Library/Application Support/com.jarvis.app/projects/{project_id}/chat_sessions/` |
 | Application logs | `~/Library/Application Support/com.jarvis.app/logs/` |
 | QMD search models | `~/.cache/qmd/models/` (~2.1GB) |
@@ -243,7 +256,7 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 
 ## Backend Commands (Tauri RPC)
 
-**85+ registered commands** across these domains:
+**89+ registered commands** across these domains:
 
 - **Recording** (5): start, stop, list, delete, convert to WAV
 - **Transcription** (4): get transcript, status, transcribe recording, transcribe gem
@@ -251,7 +264,7 @@ Jarvis is a **local-first desktop knowledge capture and enrichment app** built w
 - **Search** (4): search gems (trait-based), check search availability, setup semantic search, rebuild search index
 - **Chat** (5): start chat with recording, send message, get history, end session, get saved transcript
 - **Co-Pilot** (4): start, stop, get state, dismiss question
-- **Projects** (16): create, list, get, update, delete project; add/remove/get/search project gems; get gem projects; suggest topics, run research, get summary; start/send/get/end project chat; save/load/clear research state
+- **Projects** (20): create, list, get, update, delete project; add/remove/get/search project gems; get gem projects; suggest topics, run research, get summary; start/send/get/end project chat; save/load/clear research state; generate/save/load summary checkpoint, send summary question
 - **AI/Intelligence** (9): availability check, MLX dependency check, venv setup/reset, MLX status, list/download/cancel/delete/switch LLM models
 - **Model Management** (7): list/download/cancel/delete Whisper models, WhisperKit status/list/download
 - **Browser** (10): start/stop observer, status, settings, list tabs, fetch YouTube gist, prepare gist, prepare with Claude, export, capture Claude, check Claude panel, accessibility permission
